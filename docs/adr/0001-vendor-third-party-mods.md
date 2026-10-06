@@ -1,0 +1,3 @@
+# 0001: Vendor third-party mods
+
+This repo promises that the bytes a maintainer reviews are the bytes a user installs. Third-party mods are therefore **vendored** — their source is copied into `mods/` with a provenance record — rather than referenced from the upstream repository, because an external ref's bytes live in a repository that can be force-pushed or deleted, so the reviewed snapshot could silently change or vanish. Anthropic's official marketplace references upstreams instead, but it runs a nightly bump plus a policy scan and makes no snapshot promise; that trade-off does not fit this repo's promise.
