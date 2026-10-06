@@ -19,7 +19,7 @@ Run the repo-wide verification before opening a pull request:
 claude plugin validate --strict mods/<name>   # validate a mod's manifest; prints its hooks: / calls:
 claude plugin test mods/<name>                # run the mod's *.test.ts(x)
 claude plugin validate --strict .             # validate the marketplace manifest
-node scripts/check.mjs                        # the repo-wide check: validates every mod and the marketplace, asserts they agree
+node scripts/check.mjs                        # the repo-wide check: validates every mod and the marketplace, runs each mod's tests, asserts mods, entries, and the README catalog agree
 ```
 
 ## Mod contract

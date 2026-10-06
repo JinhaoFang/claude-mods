@@ -23,8 +23,12 @@ jobs:
       - name: Run repository check
         run: node scripts/check.mjs
 
+      - name: Run check fixture tests
+        run: node --test scripts/check.test.mjs
+
       - name: Label pull request
-        if: success()
+        if: success() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: gh pr edit "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --add-label ready-for-agent
