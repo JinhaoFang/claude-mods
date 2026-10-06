@@ -1,5 +1,7 @@
 # Editor types the engine lays into a plugin folder when it loads
 **/.claude-plugin/types/
-/tsconfig.json
+**/tsconfig.json
+# ...but a vendored mod's own tsconfig is part of the bytes we ship
+!mods/**/tsconfig.json
 .agents
 .claude
