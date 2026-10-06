@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Mods and install commands / mod 目录与安装命令
+    url: https://github.com/JinhaoFang/claude-mods#readme
+    about: Read the catalog and how to add a mod before filing. / 提交前请先阅读目录与添加 mod 的方式。

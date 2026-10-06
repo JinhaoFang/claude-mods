@@ -1,0 +1,34 @@
+name: validate
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install Claude Code CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Run repository check
+        run: node scripts/check.mjs
+
+      - name: Run check fixture tests
+        run: node --test scripts/check.test.mjs
+
+      - name: Label pull request
+        if: success() && github.event.pull_request.head.repo.full_name == github.repository
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh pr edit "${{ github.event.pull_request.number }}" --repo "${{ github.repository }}" --add-label ready-for-agent
