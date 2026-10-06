@@ -7,6 +7,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const MODS_DIR = path.join(ROOT, 'mods')
 const MARKETPLACE_MANIFEST = path.join(ROOT, '.claude-plugin', 'marketplace.json')
+const README = path.join(ROOT, 'README.md')
 
 export function findAgreementProblems(folders, entries) {
   const problems = []
@@ -47,6 +48,32 @@ export function findAgreementProblems(folders, entries) {
       problems.push(
         `manifest entry "${entry.name}" points at "${entry.source}", which has no mod folder`,
       )
+    }
+  }
+
+  return problems
+}
+
+export function findCatalogProblems(readmeMarkdown, entryNames) {
+  const problems = []
+  const catalogNames = new Set()
+  const catalogLink = /mods\/([^/)\s#]+)\/README\.md/g
+
+  for (const match of readmeMarkdown.matchAll(catalogLink)) {
+    catalogNames.add(match[1])
+  }
+
+  const manifestNames = new Set(entryNames)
+
+  for (const name of catalogNames) {
+    if (!manifestNames.has(name)) {
+      problems.push(`catalog entry "${name}" has no manifest entry`)
+    }
+  }
+
+  for (const name of manifestNames) {
+    if (!catalogNames.has(name)) {
+      problems.push(`manifest entry "${name}" is missing from the catalog`)
     }
   }
 
@@ -104,6 +131,9 @@ function main() {
   }
 
   failures.push(...findAgreementProblems(modFolders, readManifestEntries()))
+  failures.push(
+    ...findCatalogProblems(readFileSync(README, 'utf8'), readManifestEntries().map((entry) => entry.name)),
+  )
 
   if (failures.length > 0) {
     console.error('\ncheck failed:')

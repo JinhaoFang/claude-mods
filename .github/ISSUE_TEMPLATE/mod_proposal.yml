@@ -43,16 +43,16 @@ body:
   - type: input
     id: license
     attributes:
-      label: License / 许可证
-      description: The upstream license name (e.g. MIT, Apache-2.0); it must be on the allowlist. / 上游许可证名称（如 MIT、Apache-2.0），须在允许清单内。
+      label: License (third-party) / 许可证（第三方）
+      description: The upstream license name (e.g. MIT, Apache-2.0); it must be on the allowlist. Write "n/a" for a first-party mod. / 上游许可证名称（如 MIT、Apache-2.0），须在允许清单内；第一方填 "n/a"。
       placeholder: MIT
     validations:
-      required: true
+      required: false
   - type: input
     id: reputation
     attributes:
-      label: Star count and age / 星标数与仓库年龄
-      description: Upstream stars and how long the repository has existed — the reputation floor is ≥100 stars or ≥14 days old. / 上游星标数与仓库存在时长 —— 信誉门槛为 ≥100 星或 ≥14 天。
+      label: Star count and age (third-party) / 星标数与仓库年龄（第三方）
+      description: Upstream stars and how long the repository has existed — the reputation floor is ≥100 stars or ≥14 days old. Write "n/a" for a first-party mod. / 上游星标数与仓库存在时长 —— 信誉门槛为 ≥100 星或 ≥14 天；第一方填 "n/a"。
       placeholder: 420 stars, 8 months old
     validations:
-      required: true
+      required: false
