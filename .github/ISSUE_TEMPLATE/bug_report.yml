@@ -1,0 +1,51 @@
+name: Bug report / 缺陷报告
+description: Report something broken in a mod / 报告某个 mod 的问题
+title: "[Bug] "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Fill in the fields below in English or 中文.
+        感谢反馈问题，请用英文或中文填写以下内容。
+  - type: input
+    id: mod-name
+    attributes:
+      label: Mod name / mod 名称
+      description: Which mod is affected? Use the name shown in the catalog. / 出问题的是哪个 mod？请填写目录中的名称。
+      placeholder: context-band
+    validations:
+      required: true
+  - type: input
+    id: claude-code-version
+    attributes:
+      label: Claude Code version / Claude Code 版本
+      description: The output of `claude --version`. / 运行 `claude --version` 得到的版本号。
+      placeholder: 1.2.3
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened? / 发生了什么？
+      description: The actual behavior, including any error text. / 实际表现，包含报错信息。
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect? / 期望的行为？
+      description: The behavior you expected instead. / 你原本期望的表现。
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / 复现步骤
+      description: The shortest sequence that triggers the bug. / 触发该问题的最短步骤。
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true

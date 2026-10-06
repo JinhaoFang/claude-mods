@@ -1,0 +1,58 @@
+name: Mod proposal / mod 提案
+description: Propose a mod for the marketplace / 推荐一个 mod 加入 marketplace
+title: "[Mod] "
+labels: ["enhancement", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Propose a mod before it is adopted. Check the inclusion bar first — see CONTRIBUTING.md.
+        采用前请先提案，并先确认符合收录标准 —— 见 CONTRIBUTING.md。
+  - type: input
+    id: mod-name
+    attributes:
+      label: Mod name / mod 名称
+      description: The plugin name as it would appear in the catalog. / 将出现在目录中的插件名。
+    validations:
+      required: true
+  - type: textarea
+    id: what-it-does
+    attributes:
+      label: What it does / 功能简介
+      description: What the mod does and which events it handles. / mod 做什么，处理哪些事件。
+    validations:
+      required: true
+  - type: dropdown
+    id: origin
+    attributes:
+      label: First-party or third-party / 第一方还是第三方
+      description: Authored in this repo, or adopted from another project? / 本仓库原创，还是从其他项目收录？
+      options:
+        - First-party (authored here) / 第一方（本仓库原创）
+        - Third-party (adopted from upstream) / 第三方（从上游收录）
+    validations:
+      required: true
+  - type: input
+    id: upstream-url
+    attributes:
+      label: Upstream repository URL / 上游仓库地址
+      description: Third-party only — the source repository. Write "n/a" for a first-party mod. / 仅第三方：源码仓库地址；第一方填 "n/a"。
+      placeholder: https://github.com/owner/repo
+    validations:
+      required: false
+  - type: input
+    id: license
+    attributes:
+      label: License / 许可证
+      description: The upstream license name (e.g. MIT, Apache-2.0); it must be on the allowlist. / 上游许可证名称（如 MIT、Apache-2.0），须在允许清单内。
+      placeholder: MIT
+    validations:
+      required: true
+  - type: input
+    id: reputation
+    attributes:
+      label: Star count and age / 星标数与仓库年龄
+      description: Upstream stars and how long the repository has existed — the reputation floor is ≥100 stars or ≥14 days old. / 上游星标数与仓库存在时长 —— 信誉门槛为 ≥100 星或 ≥14 天。
+      placeholder: 420 stars, 8 months old
+    validations:
+      required: true
