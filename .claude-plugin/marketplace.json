@@ -11,6 +11,15 @@
       "tags": ["context", "usage", "quota", "cost", "band"],
       "author": { "name": "JinhaoFang" },
       "homepage": "https://github.com/JinhaoFang/claude-mods/tree/main/mods/context-band"
+    },
+    {
+      "name": "image-view",
+      "source": "./mods/image-view",
+      "description": "See the images you paste into Claude Code: thumbnails above the prompt instead of bare [Image #1] tags.",
+      "category": "productivity",
+      "tags": ["images", "paste", "preview", "thumbnails", "mod", "terminal"],
+      "author": { "name": "Jarrod Watts", "url": "https://github.com/jarrodwatts" },
+      "homepage": "https://github.com/jarrodwatts/claude-image-view"
     }
   ]
 }

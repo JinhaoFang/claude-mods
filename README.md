@@ -13,6 +13,7 @@ The catalog lists every mod in this marketplace; each entry installs from here.
 | mod | description | install |
 | --- | --- | --- |
 | [context-band](mods/context-band/README.md#english) | Live band above the prompt: context fill + plan quota / session cost (adapts to login method) | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
+| [image-view](mods/image-view/README.md) | Thumbnails of the images you paste above the prompt, instead of bare `[Image #1]` tags | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
 
 ### Install
 
@@ -48,6 +49,7 @@ Apache-2.0, see [LICENSE](LICENSE).
 | mod | 说明 | 安装 |
 | --- | --- | --- |
 | [context-band](mods/context-band/README.md#中文) | 输入框上方的实时带：上下文占用 + 套餐额度 / 会话花费（自适应登录方式） | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
+| [image-view](mods/image-view/README.md) | 在输入框上方显示粘贴图片的缩略图，而不是光秃秃的 `[Image #1]` 标签 | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
 
 ### 安装
 
