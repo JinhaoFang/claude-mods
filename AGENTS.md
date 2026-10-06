@@ -9,7 +9,7 @@ Requires Node and the Claude Code CLI.
 - `claude plugin validate --strict mods/<name>` — validate a mod's manifest and print the `hooks:` / `calls:` it declares
 - `claude plugin test mods/<name>` — run the mod's `*.test.ts(x)`
 - `claude plugin validate --strict .` — validate the marketplace manifest
-- `node scripts/check-catalog.mjs` — assert `mods/*` and the marketplace entries agree both ways
+- `node scripts/check.mjs` — the repo-wide check: validate every mod, validate the marketplace manifest, and assert `mods/*` and the entries agree both ways
 
 The engineering skills come from `mattpocock/skills`. Set them up once per machine:
 
