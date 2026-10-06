@@ -2,28 +2,36 @@
 
 [English](#english) | [中文](#中文)
 
-A collection of Claude Code mods — one repository hosts them all; install by plugin name.
+A curated Claude Code marketplace hosting mods — one repository hosts them all; install by mod name.
 
 ![context-band preview](mods/context-band/assets/forms.png)
 
 ## English
 
+The catalog lists every mod in this marketplace; each entry installs from here.
+
 | mod | description | install |
 | --- | --- | --- |
 | [context-band](mods/context-band/README.md#english) | Live band above the prompt: context fill + plan quota / session cost (adapts to login method) | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
 
-Install any mod by typing its command in a Claude Code terminal session, answering `y` to add the marketplace and picking the user scope — it goes live in the current session.
+### Install
 
-### Adding a new mod
+The one-line install requires Claude Code v2.1.275+:
 
-1. Create a folder under `mods/` (structure: `.claude-plugin/plugin.json` + `hooks/`)
-2. Add one entry to `plugins` in the root `.claude-plugin/marketplace.json`:
-
-```json
-{ "name": "<mod name>", "source": "./mods/<folder>" }
+```
+/plugin install context-band --marketplace JinhaoFang/claude-mods
 ```
 
-3. Push, and anyone can install it: `/plugin install <mod name> --marketplace JinhaoFang/claude-mods`
+On an older Claude Code, add the marketplace first, then install:
+
+```
+/plugin marketplace add JinhaoFang/claude-mods
+/plugin install context-band@claude-mods
+```
+
+Type the command in a Claude Code terminal session, answer `y` to add the marketplace and pick the user scope — it goes live in the current session.
+
+To propose a mod, see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ### License
 
@@ -33,26 +41,32 @@ Apache-2.0, see [LICENSE](LICENSE).
 
 ## 中文
 
-我的 Claude Code mod（插件）合集：一个仓库托管多个 mod，安装时按插件名选择。
+精选的 Claude Code marketplace，托管多个 mod：一个仓库全部装下，按 mod 名安装。
 
-### 包含的 mod
+这里列出 marketplace 中的全部 mod，每条都可通过本 marketplace 安装。
 
 | mod | 说明 | 安装 |
 | --- | --- | --- |
 | [context-band](mods/context-band/README.md#中文) | 输入框上方的实时带：上下文占用 + 套餐额度 / 会话花费（自适应登录方式） | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
 
-在 Claude Code 终端会话中输入安装命令，按提示 `y` 添加 marketplace、选择 user scope 回车即可，当次会话立即生效。
+### 安装
 
-### 添加新 mod
+一行安装需要 Claude Code v2.1.275+：
 
-1. 在 `mods/` 下新建 mod 文件夹（结构：`.claude-plugin/plugin.json` + `hooks/`）
-2. 在根级 `.claude-plugin/marketplace.json` 的 `plugins` 里加一项：
-
-```json
-{ "name": "<mod名>", "source": "./mods/<文件夹名>" }
+```
+/plugin install context-band --marketplace JinhaoFang/claude-mods
 ```
 
-3. 推送后，别人即可安装：`/plugin install <mod名> --marketplace JinhaoFang/claude-mods`
+旧版 Claude Code 请先添加 marketplace，再安装：
+
+```
+/plugin marketplace add JinhaoFang/claude-mods
+/plugin install context-band@claude-mods
+```
+
+在 Claude Code 终端会话中输入命令，按提示 `y` 添加 marketplace、选择 user scope 回车即可，当次会话立即生效。
+
+想提交 mod，见 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 ### License
 
