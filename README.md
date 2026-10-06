@@ -13,6 +13,7 @@ The catalog lists every mod in this marketplace; each entry installs from here.
 | mod | description | install |
 | --- | --- | --- |
 | [context-band](mods/context-band/README.md#english) | Live band above the prompt: context fill + plan quota / session cost (adapts to login method) | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
+| [agent-flow](mods/agent-flow/README.md) | Live tree of the session's subagents and teammates in a pane beside the transcript; prints as text where no pane can be drawn | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
 
 ### Install
 
@@ -48,6 +49,7 @@ Apache-2.0, see [LICENSE](LICENSE).
 | mod | 说明 | 安装 |
 | --- | --- | --- |
 | [context-band](mods/context-band/README.md#中文) | 输入框上方的实时带：上下文占用 + 套餐额度 / 会话花费（自适应登录方式） | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
+| [agent-flow](mods/agent-flow/README.md) | 输入框旁实时展示会话的子代理与队友树；无法绘制面板时以文本打印 | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
 
 ### 安装
 

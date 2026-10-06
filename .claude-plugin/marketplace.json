@@ -11,6 +11,15 @@
       "tags": ["context", "usage", "quota", "cost", "band"],
       "author": { "name": "JinhaoFang" },
       "homepage": "https://github.com/JinhaoFang/claude-mods/tree/main/mods/context-band"
+    },
+    {
+      "name": "agent-flow",
+      "source": "./mods/agent-flow",
+      "description": "A live tree of the session's subagents and teammates in a pane beside the transcript, fed by engine events, with a text fallback where no pane can be drawn.",
+      "category": "productivity",
+      "tags": ["agents", "subagents", "pane", "tree", "flow"],
+      "author": { "name": "Charles Tao" },
+      "homepage": "https://github.com/Charlie0113-T/claude-agent-flow"
     }
   ]
 }
