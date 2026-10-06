@@ -13,6 +13,7 @@
       "homepage": "https://github.com/JinhaoFang/claude-mods/tree/main/mods/context-band"
     },
     {
+<<<<<<< HEAD
       "name": "block-destructive-commands",
       "source": "./mods/block-destructive-commands",
       "description": "Denies Bash commands that match destructive patterns (recursive rm on roots, force push, hard reset, destructive SQL, disk formatting) before they run.",
@@ -29,6 +30,15 @@
       "tags": ["agents", "subagents", "pane", "tree", "flow"],
       "author": { "name": "Charles Tao" },
       "homepage": "https://github.com/Charlie0113-T/claude-agent-flow"
+    },
+    {
+      "name": "image-view",
+      "source": "./mods/image-view",
+      "description": "See the images you paste into Claude Code: thumbnails above the prompt instead of bare [Image #1] tags.",
+      "category": "productivity",
+      "tags": ["images", "paste", "preview", "thumbnails", "mod", "terminal"],
+      "author": { "name": "Jarrod Watts", "url": "https://github.com/jarrodwatts" },
+      "homepage": "https://github.com/jarrodwatts/claude-image-view"
     }
   ]
 }
