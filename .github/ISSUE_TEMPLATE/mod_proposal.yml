@@ -48,11 +48,11 @@ body:
       placeholder: MIT
     validations:
       required: false
-  - type: input
+  - type: textarea
     id: reputation
     attributes:
-      label: Star count and age (third-party) / 星标数与仓库年龄（第三方）
-      description: Upstream stars and how long the repository has existed — the reputation floor is ≥100 stars or ≥14 days old. Write "n/a" for a first-party mod. / 上游星标数与仓库存在时长 —— 信誉门槛为 ≥100 星或 ≥14 天；第一方填 "n/a"。
-      placeholder: 420 stars, 8 months old
+      label: Community-adoption evidence (third-party) / 社区采用证据（第三方）
+      description: Independent forks, downstream packaging (Nix, Homebrew, dotfiles), third-party evaluations, distribution counts, and the mod's own issue traffic. Also give stars and repository age — the floor is ≥100 stars or ≥14 days old, which is a floor, not a substitute for evidence; host-repository stars are not a signal. Write "n/a" for a first-party mod. / 独立 fork、下游打包（Nix、Homebrew、dotfiles）、第三方评测、分发量与 mod 自己的 issue 动态。同时给出星标数与仓库年龄 —— 门槛为 ≥100 星或 ≥14 天，它只是门槛而非证据的替代；宿主仓库的星标不是信号。第一方填 "n/a"。
+      placeholder: e.g. packaged in nixpkgs; 3 independent forks; 420 stars, 8 months old
     validations:
       required: false
