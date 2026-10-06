@@ -1,5 +1,19 @@
 {
   "name": "claude-mods",
+  "description": "A curated Claude Code marketplace hosting mods — plugins whose code registers event handlers.",
   "owner": { "name": "JinhaoFang" },
-  "plugins": [{ "name": "context-band", "source": "./mods/context-band" }]
+  "metadata": {
+    "description": "A curated Claude Code marketplace hosting mods — plugins whose code registers event handlers."
+  },
+  "plugins": [
+    {
+      "name": "context-band",
+      "source": "./mods/context-band",
+      "description": "A live band above the prompt showing the session's context usage, plan quota or cost.",
+      "category": "monitoring",
+      "tags": ["context", "usage", "quota", "cost", "band"],
+      "author": { "name": "JinhaoFang" },
+      "homepage": "https://github.com/JinhaoFang/claude-mods/tree/main/mods/context-band"
+    }
+  ]
 }
