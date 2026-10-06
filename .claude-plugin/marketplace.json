@@ -13,7 +13,6 @@
       "homepage": "https://github.com/JinhaoFang/claude-mods/tree/main/mods/context-band"
     },
     {
-<<<<<<< HEAD
       "name": "block-destructive-commands",
       "source": "./mods/block-destructive-commands",
       "description": "Denies Bash commands that match destructive patterns (recursive rm on roots, force push, hard reset, destructive SQL, disk formatting) before they run.",
