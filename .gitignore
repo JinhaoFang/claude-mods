@@ -1,0 +1,3 @@
+# Editor types the engine lays into a plugin folder when it loads
+**/.claude-plugin/types/
+**/tsconfig.json

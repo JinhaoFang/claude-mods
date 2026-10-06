@@ -1,0 +1,39 @@
+{
+  "name": "context-band",
+  "version": "0.2.0",
+  "description": "A band above the prompt showing the session's context usage, plan quota or cost",
+  "author": { "name": "JinhaoFang" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "warningThreshold": {
+      "type": "number",
+      "title": "Warning colour at",
+      "default": 60,
+      "description": "Percent where colours turn to warning (1-100)"
+    },
+    "errorThreshold": {
+      "type": "number",
+      "title": "Error colour at",
+      "default": 85,
+      "description": "Percent where colours turn to error (1-100)"
+    },
+    "refreshSeconds": {
+      "type": "number",
+      "title": "Fallback refresh (s)",
+      "default": 7,
+      "description": "Fallback redraw interval in seconds; turn ends update it at once"
+    },
+    "showCost": {
+      "type": "boolean",
+      "title": "Show session cost",
+      "default": true,
+      "description": "Show the session cost when no plan quota is reported"
+    },
+    "showResetIn": {
+      "type": "boolean",
+      "title": "Show plan reset time",
+      "default": true,
+      "description": "Show when the nearest plan window resets"
+    }
+  }
+}
