@@ -54,6 +54,8 @@ Everything comes from the engine-native `$.session.usage()` (a free local call, 
 
 ### Development
 
+Contributor rules — the mod contract and the inclusion bar — live in [`CONTRIBUTING.md`](../../CONTRIBUTING.md).
+
 ```bash
 claude plugin validate mods/context-band
 claude plugin test mods/context-band
@@ -112,6 +114,8 @@ Claude Code 的一个 mod（插件）：在输入框上方放一条实时带，�
 - 卸载：`claude plugin uninstall context-band`
 
 ### 开发
+
+贡献者规则（mod 契约与收录标准）见 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)。
 
 ```bash
 claude plugin validate mods/context-band
