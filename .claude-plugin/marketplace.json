@@ -20,6 +20,15 @@
       "tags": ["security", "bash", "guard", "hooks"],
       "author": { "name": "claude-code-templates", "url": "https://www.aitmpl.com" },
       "homepage": "https://github.com/davila7/claude-code-templates"
+    },
+    {
+      "name": "agent-flow",
+      "source": "./mods/agent-flow",
+      "description": "A live tree of the session's subagents and teammates in a pane beside the transcript, fed by engine events, with a text fallback where no pane can be drawn.",
+      "category": "productivity",
+      "tags": ["agents", "subagents", "pane", "tree", "flow"],
+      "author": { "name": "Charles Tao" },
+      "homepage": "https://github.com/Charlie0113-T/claude-agent-flow"
     }
   ]
 }
