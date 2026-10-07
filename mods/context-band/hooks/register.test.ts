@@ -694,6 +694,24 @@ test('an agent view labels the loop by name, then type, then short id', async ($
   await main.unmount()
 })
 
+test('a listed loop with neither name nor type falls back to the short id', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
+    agentOf({ id: '0f3ea2c911aa', type: '' }),
+  ])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: '0f3ea2c911aa' } },
+  })
+  expect(await ui.find({ text: /0f3ea2c9/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('an agent with no completed step shows the inactive placeholder', async ($, on) => {
   stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
   on('session.usage', () => ({
@@ -1195,6 +1213,34 @@ test('the pill names the viewed agent in an agent view', async ($, on) => {
   await ui.unmount()
 })
 
+test('a long name caps the pill label at twelve characters', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
+    agentOf({ id: 'a1', type: 'Explore', name: 'general-purpose' }),
+  ])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+  await ui.press({ key: 'collapse' })
+  expect((await ui.find({ type: 'Button', text: /◂/ }))?.props.label).toBe('◂ general-purp 16.0%')
+  await ui.unmount()
+})
+
 test('an agent view with no completed step shows a dim zero pill', async ($, on) => {
   stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
   on('session.usage', () => ({
@@ -1627,6 +1673,56 @@ function rowBoxesOf(column: DrawnElement | undefined): DrawnElement[] {
     child => (child as DrawnElement)?.type === 'Box',
   ) as DrawnElement[]
 }
+
+function drawnWidthOf(value: unknown): number {
+  if (typeof value === 'string') return value.length
+  if (Array.isArray(value)) return value.reduce((sum, child) => sum + drawnWidthOf(child), 0)
+  if (!value || typeof value !== 'object') return 0
+  const el = value as DrawnElement
+  if (el.type === 'Button') {
+    return typeof el.props?.label === 'string' ? el.props.label.length : 0
+  }
+  return drawnWidthOf(el.children)
+}
+
+test('a long identity label costs the path room before the rows overflow eighty columns', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal-v3-frontend-builds', [
+    agentOf({ id: 'a1', type: 'Explore', name: 'general-purpose', status: 'running' }),
+  ])
+  mock.clock(on, { now: FIXED_NOW })
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high', agentId: 'a1' })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+
+  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
+  expect(drawnWidthOf(env)).toBeLessThanOrEqual(80)
+  expect(drawnWidthOf(readings)).toBeLessThanOrEqual(80)
+  expect(buttonKeysIn(env)).toEqual(['hide', 'settings', 'collapse'])
+  expect(buttonKeysIn(readings)).toEqual([])
+  expect(await ui.find({ text: /general-purpose/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^client-portal-v3-frontend-builds$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /work\// })).toBeUndefined()
+  expect(await ui.find({ text: /16\.0%/ })).toBeDefined()
+  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
+  await ui.unmount()
+})
 
 test('at eighty columns the main view holds both rows whole with the buttons on the environment row', async ($, on) => {
   stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')

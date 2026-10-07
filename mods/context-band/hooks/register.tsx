@@ -32,10 +32,12 @@ import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-cod
 // of the window.
 //
 // Agent views — turn.step fills the per-agent tracker (its writes are wrapped
-// so a refusal never disturbs dispatch); main-loop effort lands in mainEffort.
-// The tracked model decides the window table; identity is name → type → short
-// id, cached before the engine prunes the loop. Compact exists in the main
-// conversation alone, two-step, waiting out a running turn.
+// so a refusal never disturbs dispatch; the same catch covers the roster read
+// and the name cache, so a failed agent.list or a refused name write leaves
+// dispatch untouched too); main-loop effort lands in mainEffort. The tracked
+// model decides the window table; identity is name → type → short id, cached
+// before the engine prunes the loop. Compact exists in the main conversation
+// alone, two-step, waiting out a running turn.
 
 const isHidden = atom({ plugin: 'context-band', key: 'isHidden' } as const, false)
 const isCollapsed = atom({ plugin: 'context-band', key: 'isCollapsed' } as const, false)
@@ -52,22 +54,24 @@ const settings = atom(
 const BAR_CELLS = 12
 const QUOTA_CELLS = 3
 const PATH_CELLS = 12
-const GROUP_CELLS = 18
-const AGENT_GROUP_CELLS = 7
+const WORKING_DOT_CELLS = 2
+const GROUP_RESERVED_CELLS = 18
+const AGENT_GROUP_RESERVED_CELLS = 7
 const COMPACT_CONFIRM_MS = 5_000
 
-interface Config {
+interface ThresholdPair {
   warnAt: number
   errorAt: number
+}
+
+interface Config extends ThresholdPair {
   refreshSeconds: number
   showEffort: boolean
   showCost: boolean
   showResetIn: boolean
 }
 
-interface SettingsValues {
-  warnAt?: number
-  errorAt?: number
+interface SettingsValues extends Partial<ThresholdPair> {
   refreshSeconds?: number
   showEffort?: boolean
   showCost?: boolean
@@ -79,8 +83,7 @@ type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
 const EFFORT_CELLS: Record<Effort, number> = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 }
 
 function effortScale(effort: Effort): string {
-  const filled = EFFORT_CELLS[effort]
-  return '█'.repeat(filled) + '░'.repeat(5 - filled)
+  return bar((EFFORT_CELLS[effort] / 5) * 100, 5)
 }
 
 function readConfig(options: PluginOptions): Config {
@@ -111,18 +114,6 @@ function withOverrides(base: Config, s: SettingsValues): Config {
 
 function clamp(n: number, lo: number, hi: number): number {
   return Math.min(hi, Math.max(lo, n))
-}
-
-function stepWarnPair(warn: number, error: number, delta: number): { warn: number; error: number } {
-  const w = clamp(warn + delta, 1, 100)
-  const e = Math.min(100, Math.max(error, w + 5))
-  return { warn: Math.min(w, e - 5), error: e }
-}
-
-function stepErrorPair(warn: number, error: number, delta: number): { warn: number; error: number } {
-  const e = clamp(error + delta, 1, 100)
-  const w = Math.max(1, Math.min(warn, e - 5))
-  return { warn: w, error: Math.max(e, w + 5) }
 }
 
 function armRefresh($: EngineInterface, seconds: number, previous: Timer | null): Timer {
@@ -163,13 +154,56 @@ function bar(percent: number, cells: number): string {
   return '█'.repeat(filled) + '░'.repeat(cells - filled)
 }
 
-function shortenPath(cwd: string, model: string, bodyColumns: number, groupCells: number): string {
-  const budget = bodyColumns - model.length - PATH_CELLS - groupCells
+function windowFor(model: string | undefined): number {
+  return !!model && /\[1m\]/.test(model) ? 1_000_000 : 200_000
+}
+
+function shortenPath(
+  cwd: string,
+  modelAndScale: string,
+  labelCells: number,
+  bodyColumns: number,
+  reservedCells: number,
+): string {
+  const budget = Math.max(
+    0,
+    bodyColumns - labelCells - WORKING_DOT_CELLS - modelAndScale.length - PATH_CELLS - reservedCells,
+  )
   if (cwd.length <= budget) return cwd
   const segments = cwd.split('/').filter(Boolean)
   const lastTwo = segments.slice(-2).join('/')
   if (lastTwo.length <= budget) return lastTwo
   return segments[segments.length - 1] ?? cwd
+}
+
+interface ResolvedView {
+  label: string
+  working: boolean
+  window: number
+  fill: number | undefined
+  model: string | undefined
+  effort: Effort | number | null
+}
+
+async function resolveView(
+  $: EngineInterface,
+  viewed: string | undefined,
+  model: string,
+  contextWindow: number,
+): Promise<ResolvedView | null> {
+  if (viewed === undefined) return null
+  const [tracked, roster] = await Promise.all([read($, tracker), $.agent.list()])
+  const entry = tracked.loops[viewed]
+  const info = roster.find(a => a.id === viewed)
+  const live = info ? info.name || info.type : undefined
+  return {
+    label: live || tracked.names[viewed] || viewed.slice(0, 8),
+    working: info ? info.status === 'running' : false,
+    window: entry && entry.model !== model ? windowFor(entry.model) : contextWindow,
+    fill: entry?.fill,
+    model: entry?.model,
+    effort: entry?.effort ?? null,
+  }
 }
 
 async function tryCompact($: EngineInterface): Promise<boolean> {
@@ -230,7 +264,8 @@ export const register: Register = (on, rawOptions) => {
         }
         const names = { ...t.names }
         for (const a of roster) {
-          names[a.id] = a.name ?? a.type
+          const name = a.name || a.type
+          if (name) names[a.id] = name
         }
         return { loops, names }
       })
@@ -276,27 +311,25 @@ export const register: Register = (on, rawOptions) => {
     let working = e.props.isWorking
     let shownModel: string | undefined = model
     let effort: Effort | number | null = mainEffortSeen
-    if (viewed) {
-      const [tracked, roster] = await Promise.all([read($, tracker), $.agent.list()])
-      const entry = tracked.loops[viewed]
-      const info = roster.find(a => a.id === viewed)
-      label = info ? (info.name ?? info.type) : (tracked.names[viewed] ?? viewed.slice(0, 8))
-      working = info ? info.status === 'running' : false
-      window =
-        entry && entry.model !== model ? (/\[1m\]/.test(entry.model) ? 1_000_000 : 200_000) : context.window
-      noReading = !entry
-      percent = entry ? (entry.fill / window) * 100 : 0
-      shownModel = entry?.model
-      effort = entry?.effort ?? null
+    const view = await resolveView($, viewed, model, window)
+    if (view) {
+      label = view.label
+      working = view.working
+      window = view.window
+      noReading = view.fill === undefined
+      percent = view.fill === undefined ? 0 : (view.fill / view.window) * 100
+      shownModel = view.model
+      effort = view.effort
     }
     let scale = typeof effort === 'string' ? effortScale(effort) : undefined
 
     if (await read($, isCollapsed)) {
+      const pillLabel = label?.slice(0, 12)
       return (
         <Box>
           <Button
             key="pill"
-            label={label ? `◂ ${label} ${percent.toFixed(1)}%` : `◂ ${percent.toFixed(1)}%`}
+            label={pillLabel ? `◂ ${pillLabel} ${percent.toFixed(1)}%` : `◂ ${percent.toFixed(1)}%`}
             dimColor={noReading}
             onPress={() => update($, isCollapsed, () => false)}
           />
@@ -390,21 +423,22 @@ export const register: Register = (on, rawOptions) => {
       </Box>
     )
 
-    const stepWarn = (delta: number) => {
+    const stepPair = (field: 'warnAt' | 'errorAt', delta: number) => {
       void update($, settings, s => {
+        const warnFrom = s.warnAt ?? baseConfig.warnAt
         const errorFrom = s.errorAt ?? baseConfig.errorAt
-        const pair = stepWarnPair(s.warnAt ?? baseConfig.warnAt, errorFrom, delta)
-        const written: SettingsValues = { ...s, warnAt: pair.warn }
-        if (pair.error !== errorFrom) written.errorAt = pair.error
-        return written
-      })
-    }
-    const stepError = (delta: number) => {
-      void update($, settings, s => {
-        const errorFrom = s.errorAt ?? baseConfig.errorAt
-        const pair = stepErrorPair(s.warnAt ?? baseConfig.warnAt, errorFrom, delta)
-        const written: SettingsValues = { ...s, errorAt: pair.error }
-        if (pair.warn !== (s.warnAt ?? baseConfig.warnAt)) written.warnAt = pair.warn
+        const written: SettingsValues = { ...s }
+        if (field === 'warnAt') {
+          const warn = clamp(warnFrom + delta, 1, 100)
+          const error = Math.min(100, Math.max(errorFrom, warn + 5))
+          written.warnAt = Math.min(warn, error - 5)
+          if (error !== errorFrom) written.errorAt = error
+        } else {
+          const error = clamp(errorFrom + delta, 1, 100)
+          const warn = Math.max(1, Math.min(warnFrom, error - 5))
+          written.errorAt = Math.max(error, warn + 5)
+          if (warn !== warnFrom) written.warnAt = warn
+        }
         return written
       })
     }
@@ -430,8 +464,8 @@ export const register: Register = (on, rawOptions) => {
     const numericRow = (
       <Box key="settings-numeric">
         {[
-          ...stepper('Warn', String(config.warnAt), 'warn-', 'warn+', stepWarn, 5),
-          ...stepper('Error', String(config.errorAt), 'error-', 'error+', stepError, 5),
+          ...stepper('Warn', String(config.warnAt), 'warn-', 'warn+', delta => stepPair('warnAt', delta), 5),
+          ...stepper('Error', String(config.errorAt), 'error-', 'error+', delta => stepPair('errorAt', delta), 5),
           ...stepper('Refresh', `${config.refreshSeconds}s`, 'seconds-', 'seconds+', stepSeconds),
         ]}
       </Box>
@@ -478,7 +512,13 @@ export const register: Register = (on, rawOptions) => {
           {shownModel && <Text>{shownModel} </Text>}
           {scale && <Text dimColor>{scale} </Text>}
           <Text color={working ? 'success' : 'inactive'}>{working ? '●' : '○'}{' '}</Text>
-          <Text dimColor>{shortenPath(cwd, modelAndScale, e.props.bodyColumns, viewed ? AGENT_GROUP_CELLS : GROUP_CELLS)}</Text>
+          <Text dimColor>{shortenPath(
+            cwd,
+            modelAndScale,
+            label ? label.length + 1 : 0,
+            e.props.bodyColumns,
+            viewed ? AGENT_GROUP_RESERVED_CELLS : GROUP_RESERVED_CELLS,
+          )}</Text>
           {group}
         </Box>
         {settingsOpen ? [numericRow, togglesRow] : [readingsRow]}
