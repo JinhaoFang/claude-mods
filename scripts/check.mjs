@@ -1,6 +1,6 @@
-// Repo verification seam: validates every mod, the root manifest, and folder/entry agreement.
+// Repo verification seam: validates every mod, the root manifest, and folder/entry/catalog/language agreement.
 import { spawnSync } from 'node:child_process'
-import { readdirSync, readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
@@ -8,6 +8,10 @@ const ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const MODS_DIR = path.join(ROOT, 'mods')
 const MARKETPLACE_MANIFEST = path.join(ROOT, '.claude-plugin', 'marketplace.json')
 const README = path.join(ROOT, 'README.md')
+const README_ZH = path.join(ROOT, 'README.zh-CN.md')
+const ZH_SUFFIX = '.zh-CN.md'
+const CJK = /[\p{Script=Han}]/u
+const ZH_LANGUAGE_LINK = /\[中文\]\([^)]*\)/g
 
 export function findAgreementProblems(folders, entries) {
   const problems = []
@@ -57,7 +61,7 @@ export function findAgreementProblems(folders, entries) {
 export function findCatalogProblems(readmeMarkdown, entryNames) {
   const problems = []
   const catalogNames = new Set()
-  const catalogLink = /mods\/([^/)\s#]+)\/README\.md/g
+  const catalogLink = /mods\/([^/)\s#]+)\/README(?:\.zh-CN)?\.md/g
 
   for (const match of readmeMarkdown.matchAll(catalogLink)) {
     catalogNames.add(match[1])
@@ -80,6 +84,36 @@ export function findCatalogProblems(readmeMarkdown, entryNames) {
   return problems
 }
 
+export function findLanguageProblems(files) {
+  const problems = []
+  const textByPath = new Map(files.map((file) => [file.path, file.text]))
+
+  for (const file of files) {
+    if (file.path.endsWith(ZH_SUFFIX)) {
+      const sibling = file.path.slice(0, -ZH_SUFFIX.length) + '.md'
+      const siblingText = textByPath.get(sibling)
+
+      if (siblingText === undefined) {
+        problems.push(`${file.path} has no English counterpart ${sibling}`)
+        continue
+      }
+
+      if (!file.text.includes(path.basename(sibling))) {
+        problems.push(`${file.path} does not link to ${sibling}`)
+      }
+
+      if (!siblingText.includes(path.basename(file.path))) {
+        problems.push(`${sibling} does not link to ${file.path}`)
+      }
+    } else if (CJK.test(file.text.replace(ZH_LANGUAGE_LINK, ''))) {
+      const target = file.path.replace(/\.md$/, ZH_SUFFIX)
+      problems.push(`${file.path} mixes languages; move the Chinese into ${target}`)
+    }
+  }
+
+  return problems
+}
+
 function readPluginName(modFolder) {
   const manifestPath = path.join(modFolder, '.claude-plugin', 'plugin.json')
   try {
@@ -95,8 +129,18 @@ function readModFolders() {
     .map((item) => ({
       name: item.name,
       pluginName: readPluginName(path.join(MODS_DIR, item.name)),
+      vendored: existsSync(path.join(MODS_DIR, item.name, 'PROVENANCE.md')),
     }))
     .sort((a, b) => a.name.localeCompare(b.name))
+}
+
+function readAuthoredMarkdown(vendoredDirs) {
+  const result = spawnSync('git', ['ls-files', '-z', '--', '*.md'], { cwd: ROOT, encoding: 'utf8' })
+  return (result.stdout ?? '')
+    .split('\0')
+    .filter(Boolean)
+    .filter((filePath) => !vendoredDirs.some((dir) => filePath.startsWith(dir)))
+    .map((filePath) => ({ path: filePath, text: readFileSync(path.join(ROOT, filePath), 'utf8') }))
 }
 
 function readManifestEntries() {
@@ -130,10 +174,19 @@ function main() {
     failures.push('claude plugin validate --strict . failed')
   }
 
-  failures.push(...findAgreementProblems(modFolders, readManifestEntries()))
-  failures.push(
-    ...findCatalogProblems(readFileSync(README, 'utf8'), readManifestEntries().map((entry) => entry.name)),
-  )
+  const entries = readManifestEntries()
+  const entryNames = entries.map((entry) => entry.name)
+
+  failures.push(...findAgreementProblems(modFolders, entries))
+  failures.push(...findCatalogProblems(readFileSync(README, 'utf8'), entryNames))
+  if (existsSync(README_ZH)) {
+    failures.push(...findCatalogProblems(readFileSync(README_ZH, 'utf8'), entryNames))
+  }
+
+  const vendoredDirs = modFolders
+    .filter((folder) => folder.vendored)
+    .map((folder) => `mods/${folder.name}/`)
+  failures.push(...findLanguageProblems(readAuthoredMarkdown(vendoredDirs)))
 
   if (failures.length > 0) {
     console.error('\ncheck failed:')
