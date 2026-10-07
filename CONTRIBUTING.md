@@ -19,7 +19,7 @@ Run the repo-wide verification before opening a pull request:
 claude plugin validate --strict mods/<name>   # validate a mod's manifest; prints its hooks: / calls:
 claude plugin test mods/<name>                # run the mod's *.test.ts(x)
 claude plugin validate --strict .             # validate the marketplace manifest
-node scripts/check.mjs                        # the repo-wide check: validates every mod and the marketplace, runs each mod's tests, asserts mods, entries, and the README catalog agree
+node scripts/check.mjs                        # the repo-wide check: validates every mod and the marketplace, runs each mod's tests, asserts mods, entries, and both README catalogs agree, and that docs ship one language per file
 ```
 
 ## Mod contract
@@ -46,6 +46,18 @@ A **third-party mod** (one adopted from another project) additionally ships:
 - a copy of the upstream license — `mods/<name>/LICENSE`
 
 A first-party mod ships neither: it is authored here and covered by the repo's own [`LICENSE`](LICENSE).
+
+## Documentation and language
+
+Docs we author ship one language per file. The English file is `NAME.md`; its Chinese translation is `NAME.zh-CN.md` beside it. A single file never carries both — no English on top with Chinese below. Each half of a pair opens with a language switcher that links to the other, so a reader lands on their language first:
+
+```markdown
+[English](README.md) | [中文](README.zh-CN.md)
+```
+
+A translation is optional; what the rule forbids is one file mixing the two. It applies to the root `README.md` and to a first-party mod's `README.md`. A **vendored** mod is exempt: its upstream files ship byte-for-byte and are never translated or edited, so a Chinese reader follows the catalog to the upstream English `README.md`.
+
+`node scripts/check.mjs` enforces the rule: a file outside a vendored mod may not contain Chinese prose unless its name ends in `.zh-CN.md` (a switcher's own `[中文](…)` label is the one exception), every `*.zh-CN.md` needs its `*.md` sibling, and the pair must link to each other. Both the English and the Chinese root catalog must agree with the marketplace manifest.
 
 ## Inclusion bar
 
