@@ -954,6 +954,193 @@ test('the working dot follows the viewed loop status in an agent view', async ($
   await idle.unmount()
 })
 
+test('the scale follows the latest main-loop step and drops when it carries none', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'low' })
+  expect(await ui.find({ type: 'Text', text: /^█░░░░ ?$/ })).toBeDefined()
+
+  await runStep($, { turnId: 't1', index: 1, model: 'Opus 4.6', messageCount: 5, effort: 'max' })
+  expect(await ui.find({ type: 'Text', text: /^█████ ?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^█░░░░ ?$/ })).toBeUndefined()
+
+  await runStep($, { turnId: 't1', index: 2, model: 'Opus 4.6', messageCount: 7 })
+  expect(await ui.find({ type: 'Text', text: /^█████ ?$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('with no step yet recorded the model shows without a scale', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('an effort without a named level draws no scale', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 4 })
+  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an agent view shows the loop model and effort from its latest step', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
+    agentOf({ id: 'a1', type: 'Explore', status: 'running' }),
+  ])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  await runStep($, {
+    turnId: 't1',
+    index: 0,
+    model: 'glm-5.3-flash[1m]',
+    messageCount: 3,
+    effort: 'xhigh',
+    agentId: 'a1',
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeDefined()
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an agent view with no completed step shows neither model nor scale', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the main view draws no scale from an agent step', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await runStep($, {
+    turnId: 't1',
+    index: 0,
+    model: 'glm-5.3-flash[1m]',
+    messageCount: 3,
+    effort: 'max',
+    agentId: 'a1',
+  })
+  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the path yields room for the scale before the readings do', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.42 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, bodyColumns: 40 },
+  })
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'medium' })
+  expect(await ui.find({ type: 'Text', text: /^██░░░ ?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /client-portal/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /work\// })).toBeUndefined()
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a main-loop step puts the effort scale beside the model', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeUndefined()
+
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
+  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('the main conversation working flag rules the dot in the main view alone', async ($, on) => {
   stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', status: 'running' })])
   on('session.usage', () => ({

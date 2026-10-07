@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
 const isHidden = atom({ plugin: 'context-band', key: 'isHidden' } as const, false)
+const mainEffort = atom({ plugin: 'context-band', key: 'mainEffort' } as const, null)
 const tracker = atom(
   { plugin: 'context-band', key: 'tracker' } as const,
   { loops: {}, names: {} },
@@ -18,6 +19,15 @@ interface Config {
   refreshMs: number
   showCost: boolean
   showResetIn: boolean
+}
+
+type Effort = 'low' | 'medium' | 'high' | 'xhigh' | 'max'
+
+const EFFORT_CELLS: Record<Effort, number> = { low: 1, medium: 2, high: 3, xhigh: 4, max: 5 }
+
+function effortScale(effort: Effort): string {
+  const filled = EFFORT_CELLS[effort]
+  return '█'.repeat(filled) + '░'.repeat(5 - filled)
 }
 
 function readConfig(options: PluginOptions): Config {
@@ -131,6 +141,7 @@ export const register: Register = (on, rawOptions) => {
               result.usage.cache_read_input_tokens +
               result.usage.cache_creation_input_tokens,
             model: e.model,
+            effort: e.effort,
           }
         }
         for (const id of Object.keys(loops)) {
@@ -142,6 +153,7 @@ export const register: Register = (on, rawOptions) => {
         }
         return { loops, names }
       })
+      if (!agentId) await update($, mainEffort, () => e.effort ?? null)
     } catch {}
   })
 
@@ -165,10 +177,12 @@ export const register: Register = (on, rawOptions) => {
     }
 
     const { Box, Text, Button } = $.ui.resolve(e)
-    const [usage, model, cwd] = await Promise.all([
+    const viewed = e.props.view.agentId
+    const [usage, model, cwd, mainEffortSeen] = await Promise.all([
       $.session.usage({ breakdown: 'summary' }),
       $.session.model(),
       $.session.cwd(),
+      viewed ? Promise.resolve(null) : read($, mainEffort),
     ])
     const { context, rateLimits, cost } = usage
 
@@ -176,12 +190,13 @@ export const register: Register = (on, rawOptions) => {
     // session compacts, not the model's theoretical limit. The summary
     // breakdown is estimated locally and sends nothing.
     const bd = context.breakdown
-    const viewed = e.props.view.agentId
     let percent = bd ? bd.percentage : (context.percent ?? 0)
     let window = bd ? bd.rawMaxTokens : context.window
     let noReading = !bd && context.percent === undefined
     let label: string | undefined
     let working = e.props.isWorking
+    let shownModel: string | undefined = model
+    let effort: Effort | number | null = mainEffortSeen
     if (viewed) {
       const [tracked, roster] = await Promise.all([read($, tracker), $.agent.list()])
       const entry = tracked.loops[viewed]
@@ -192,7 +207,11 @@ export const register: Register = (on, rawOptions) => {
         entry && entry.model !== model ? (/\[1m\]/.test(entry.model) ? 1_000_000 : 200_000) : context.window
       noReading = !entry
       percent = entry ? (entry.fill / window) * 100 : 0
+      shownModel = entry?.model
+      effort = entry?.effort ?? null
     }
+    const scale = typeof effort === 'string' ? effortScale(effort) : undefined
+    const modelAndScale = shownModel ? (scale ? `${shownModel} ${scale}` : shownModel) : ''
     const color = noReading ? 'inactive' : colorFor(percent, config)
 
     // Adaptive, not a hard login-method check: subscription windows present ->
@@ -213,9 +232,10 @@ export const register: Register = (on, rawOptions) => {
       <Box flexDirection="column">
         <Box>
           {label && <Text>{label} </Text>}
-          <Text>{model} </Text>
+          {shownModel && <Text>{shownModel} </Text>}
+          {scale && <Text dimColor>{scale} </Text>}
           <Text color={working ? 'success' : 'inactive'}>{working ? '●' : '○'}{' '}</Text>
-          <Text dimColor>{shortenPath(cwd, model, e.props.bodyColumns)}</Text>
+          <Text dimColor>{shortenPath(cwd, modelAndScale, e.props.bodyColumns)}</Text>
         </Box>
         <Box>
           <Text dimColor>Context </Text>
