@@ -4,9 +4,9 @@ import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-cod
 // Context band: a view-aware band above the prompt (the AbovePrompt site).
 //
 // Layout — an environment row (identity label in agent views, model, effort
-// scale, working dot, dim session directory, shortened path) above a readings
-// row (compaction-window gauge, plan quota bars, reset countdown or session
-// cost) carrying the button group Hide · ⟲ Compact · ⚙ · ▾. The path is the
+// scale, working dot, dim session directory, shortened path, then the button
+// group Hide · ⟲ Compact · ⚙ · ▾) above a readings row (compaction-window
+// gauge, plan quota bars, reset countdown or session cost). The path is the
 // first element sacrificed; readings never truncate.
 //
 // Render branch order — survey → hidden → collapsed pill → settings open →
@@ -52,6 +52,8 @@ const settings = atom(
 const BAR_CELLS = 12
 const QUOTA_CELLS = 3
 const PATH_CELLS = 12
+const GROUP_CELLS = 18
+const AGENT_GROUP_CELLS = 7
 const COMPACT_CONFIRM_MS = 5_000
 
 interface Config {
@@ -161,8 +163,8 @@ function bar(percent: number, cells: number): string {
   return '█'.repeat(filled) + '░'.repeat(cells - filled)
 }
 
-function shortenPath(cwd: string, model: string, bodyColumns: number): string {
-  const budget = bodyColumns - model.length - PATH_CELLS
+function shortenPath(cwd: string, model: string, bodyColumns: number, groupCells: number): string {
+  const budget = bodyColumns - model.length - PATH_CELLS - groupCells
   if (cwd.length <= budget) return cwd
   const segments = cwd.split('/').filter(Boolean)
   const lastTwo = segments.slice(-2).join('/')
@@ -385,7 +387,6 @@ export const register: Register = (on, rawOptions) => {
         {spend && (
           <Text color={quotaColor(spend.percentUsed, 'five_hour', config)}>{` · Limit ${bar(spend.percentUsed, QUOTA_CELLS)} ${spend.percentUsed}%`}</Text>
         )}
-        {group}
       </Box>
     )
 
@@ -466,7 +467,6 @@ export const register: Register = (on, rawOptions) => {
               $.ui.invalidate('ui.render')
             }}
           />,
-          ...group,
         ]}
       </Box>
     )
@@ -478,7 +478,8 @@ export const register: Register = (on, rawOptions) => {
           {shownModel && <Text>{shownModel} </Text>}
           {scale && <Text dimColor>{scale} </Text>}
           <Text color={working ? 'success' : 'inactive'}>{working ? '●' : '○'}{' '}</Text>
-          <Text dimColor>{shortenPath(cwd, modelAndScale, e.props.bodyColumns)}</Text>
+          <Text dimColor>{shortenPath(cwd, modelAndScale, e.props.bodyColumns, viewed ? AGENT_GROUP_CELLS : GROUP_CELLS)}</Text>
+          {group}
         </Box>
         {settingsOpen ? [numericRow, togglesRow] : [readingsRow]}
       </Box>

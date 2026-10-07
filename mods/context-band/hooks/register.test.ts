@@ -191,7 +191,7 @@ test('the directory shortens last-two-segments first, then the last one', async 
     plugin: 'context-band',
     surface: 'terminal',
     ...BAND,
-    props: { ...BAND.props, bodyColumns: 44 },
+    props: { ...BAND.props, bodyColumns: 60 },
   })
   expect(await medium.find({ type: 'Text', text: /work\/client-portal/ })).toBeDefined()
   expect(await medium.find({ type: 'Text', text: /\/home/ })).toBeUndefined()
@@ -1506,7 +1506,7 @@ test('the effort toggle gates the model and scale and re-credits the path', asyn
     plugin: 'context-band',
     surface: 'terminal',
     ...BAND,
-    props: { ...BAND.props, bodyColumns: 50 },
+    props: { ...BAND.props, bodyColumns: 66 },
   })
   await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
   expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
@@ -1597,4 +1597,188 @@ test('the main conversation working flag rules the dot in the main view alone', 
   expect(await main.find({ text: /○/ })).toBeDefined()
   expect(await main.find({ text: /●/ })).toBeUndefined()
   await main.unmount()
+})
+
+type DrawnElement = {
+  type?: string
+  key?: unknown
+  props?: Record<string, unknown>
+  children?: unknown
+}
+
+function buttonKeysIn(node: unknown): string[] {
+  const keys: string[] = []
+  const walk = (n: unknown) => {
+    if (Array.isArray(n)) return n.forEach(walk)
+    if (!n || typeof n !== 'object') return
+    const el = n as DrawnElement
+    if (el.type === 'Button') {
+      const key = el.key ?? el.props?.key
+      if (typeof key === 'string') keys.push(key)
+    }
+    walk(el.children)
+  }
+  walk(node)
+  return keys
+}
+
+function rowBoxesOf(column: DrawnElement | undefined): DrawnElement[] {
+  return ((column?.children ?? []) as unknown[]).filter(
+    child => (child as DrawnElement)?.type === 'Box',
+  ) as DrawnElement[]
+}
+
+test('at eighty columns the main view holds both rows whole with the buttons on the environment row', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  mock.clock(on, { now: FIXED_NOW })
+  on('session.usage', () => ({
+    value: usageOf({
+      percent: 34.2,
+      tokens: 68_400,
+      rateLimits: [
+        plan('five_hour', 23.5, minutesFromNow(133)),
+        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
+      ],
+      cost: { usd: 0.42 },
+    }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
+
+  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
+  expect(buttonKeysIn(env)).toEqual(['hide', 'compact', 'settings', 'collapse'])
+  expect(buttonKeysIn(readings)).toEqual([])
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^\/home\/jh\/work\/client-portal$/ })).toBeDefined()
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /8%/ })).toBeDefined()
+  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('at eighty columns an agent view holds both rows whole with the buttons on the environment row', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
+    agentOf({ id: 'a1', type: 'Explore', name: 'scout', status: 'running' }),
+  ])
+  mock.clock(on, { now: FIXED_NOW })
+  on('session.usage', () => ({
+    value: usageOf({
+      percent: 10,
+      tokens: 20_000,
+      rateLimits: [plan('five_hour', 23.5, minutesFromNow(133))],
+      cost: { usd: 0.42 },
+    }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+  await runStep($, {
+    turnId: 't1',
+    index: 0,
+    model: 'glm-5.3-flash[1m]',
+    messageCount: 3,
+    effort: 'xhigh',
+    agentId: 'a1',
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+
+  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
+  expect(buttonKeysIn(env)).toEqual(['hide', 'settings', 'collapse'])
+  expect(buttonKeysIn(readings)).toEqual([])
+  expect(await ui.find({ text: /scout/ })).toBeDefined()
+  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^\/root\/project\/claude-mods$/ })).toBeDefined()
+  expect(await ui.find({ text: /3\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /of 1\.0m/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
+  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('at eighty columns the settings area holds whole with the buttons on the environment row', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods')
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+
+  const [env, numeric, toggles] = rowBoxesOf(await ui.find({ type: 'Box' }))
+  expect(buttonKeysIn(env)).toEqual(['hide', 'compact', 'settings', 'collapse'])
+  expect(buttonKeysIn(numeric)).toEqual(['warn-', 'warn+', 'error-', 'error+', 'seconds-', 'seconds+'])
+  expect(buttonKeysIn(toggles)).toEqual(['effort', 'reset', 'cost', 'done'])
+  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
+  expect(await ui.find({ text: /Error 85/ })).toBeDefined()
+  expect(await ui.find({ text: /Refresh 7s/ })).toBeDefined()
+  expect(await ui.find({ text: /Model & effort on/ })).toBeDefined()
+  expect(await ui.find({ text: /\/root\/project\/claude-mods/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a narrower terminal shortens the path before the readings and the buttons give way', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  mock.clock(on, { now: FIXED_NOW })
+  on('session.usage', () => ({
+    value: usageOf({
+      percent: 34.2,
+      tokens: 68_400,
+      rateLimits: [
+        plan('five_hour', 23.5, minutesFromNow(133)),
+        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
+      ],
+      cost: { usd: 0.42 },
+    }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, bodyColumns: 70 },
+  })
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
+
+  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
+  expect(buttonKeysIn(env)).toEqual(['hide', 'compact', 'settings', 'collapse'])
+  expect(buttonKeysIn(readings)).toEqual([])
+  expect(await ui.find({ type: 'Text', text: /^work\/client-portal$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\/home\/jh\/work/ })).toBeUndefined()
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /8%/ })).toBeDefined()
+  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
+  await ui.unmount()
 })
