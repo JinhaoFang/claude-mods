@@ -51,3 +51,33 @@ _Avoid_: spec, layout, schema
 **Curated**:
 Admitted only by a maintainer's judgement against the inclusion bar, never automatically. This repo is curated; a mirror is not.
 _Avoid_: awesome, aggregated, crawled
+
+### Mod domain
+
+**Band**:
+The resident area a mod draws above the prompt (the engine's `AbovePrompt` site), one or two rows tall.
+_Avoid_: status line, strip, widget
+
+**Agent loop**:
+One subagent's or teammate's execution loop inside the session, with its own context window, identified by an agentId.
+_Avoid_: worker, child session
+
+**Subagent**:
+An agent loop started within this session's process, by the model, a person, or a plugin.
+_Avoid_: child agent, worker, fork
+
+**Teammate**:
+An agent started as a named member of a team. A teammate with a terminal pane of its own is a separate session.
+_Avoid_: team member, peer
+
+**Agent view**:
+The transcript of one agent loop, opened from the tasks list; the band follows whichever view is on screen.
+_Avoid_: subagent session, agent session
+
+**Main conversation**:
+The session's top-level loop; the engine's native usage and compact apply to it alone.
+_Avoid_: main session, parent session, home session
+
+**Compaction window**:
+The window the context percentage measures — where auto-compact fires, below the model's theoretical limit.
+_Avoid_: context window, model limit
