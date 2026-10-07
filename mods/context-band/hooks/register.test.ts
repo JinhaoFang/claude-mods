@@ -423,6 +423,118 @@ test('the Hide button hides the band until /context-band shows it again', async 
   await ui.unmount()
 })
 
+test('the compact button compacts on the second press alone', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  let compacts = 0
+  on('session.compact', () => {
+    compacts += 1
+    return { value: { skip: 'test' } }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeDefined()
+  expect(compacts).toBe(0)
+
+  await ui.press({ key: 'compact' })
+  expect(compacts).toBe(0)
+  expect((await ui.find({ type: 'Button', text: /Confirm/ }))?.props.label).toBe('Confirm')
+  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeUndefined()
+
+  await ui.press({ key: 'compact' })
+  expect(compacts).toBe(1)
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the confirm reverts to the idle form when the timeout passes', async ($, on) => {
+  stubEnvironment(on)
+  const clock = mock.clock(on, { now: FIXED_NOW })
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  let compacts = 0
+  on('session.compact', () => {
+    compacts += 1
+    return { value: { skip: 'test' } }
+  })
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'compact' })
+  expect((await ui.find({ type: 'Button', text: /Confirm/ }))?.props.label).toBe('Confirm')
+
+  await clock.advance(4_000)
+  expect((await ui.find({ type: 'Button', text: /Confirm/ }))?.props.label).toBe('Confirm')
+
+  await clock.advance(2_000)
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeDefined()
+  expect(compacts).toBe(0)
+  await ui.unmount()
+})
+
+test('an agent view draws no compact button', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  let compacts = 0
+  on('session.compact', () => {
+    compacts += 1
+    return { value: { skip: 'test' } }
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Button', text: /Hide/ })).toBeDefined()
+  await ui.press({ key: 'compact' }).catch(() => undefined)
+  expect(compacts).toBe(0)
+  await ui.unmount()
+})
+
+test('a compact pressed during a running turn waits for the turn to end', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  let compacts = 0
+  on('session.compact', () => {
+    compacts += 1
+    return { value: { skip: 'test' } }
+  })
+  on('turn.complete', () => ({ text: '' }))
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, isWorking: true },
+  })
+  await ui.press({ key: 'compact' })
+  await ui.press({ key: 'compact' })
+  expect(compacts).toBe(0)
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+
+  await $.turn.complete({
+    answer: '',
+    durationMs: 1_000,
+    isAborted: false,
+    turnId: 't1',
+    reason: 'answer',
+  })
+  expect(compacts).toBe(1)
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('the band yields when a survey holds it', async ($, on) => {
   stubEnvironment(on)
   on('session.usage', () => ({
