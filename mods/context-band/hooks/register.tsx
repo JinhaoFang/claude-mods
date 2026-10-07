@@ -1,5 +1,5 @@
 import { atom, read, update } from 'claude-code'
-import type { PluginOptions, Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
 const isHidden = atom({ plugin: 'context-band', key: 'isHidden' } as const, false)
 const tracker = atom(
@@ -10,6 +10,7 @@ const tracker = atom(
 const BAR_CELLS = 12
 const QUOTA_CELLS = 3
 const PATH_CELLS = 12
+const COMPACT_CONFIRM_MS = 5_000
 
 interface Config {
   warnAt: number
@@ -81,8 +82,21 @@ function shortenPath(cwd: string, model: string, bodyColumns: number): string {
   return segments[segments.length - 1] ?? cwd
 }
 
+async function tryCompact($: EngineInterface): Promise<boolean> {
+  try {
+    await $.session.compact()
+    return true
+  } catch {
+    return false
+  }
+}
+
 export const register: Register = (on, rawOptions) => {
   const config = readConfig(rawOptions)
+
+  let compactArmed = false
+  let confirmTimer: Timer | null = null
+  let compactPending = false
 
   on('session.start', async ($, e, next) => {
     await $.command.register({
@@ -129,6 +143,14 @@ export const register: Register = (on, rawOptions) => {
         return { loops, names }
       })
     } catch {}
+  })
+
+  on('turn.complete', async ($, e, next) => {
+    if (compactPending && e.agentId === undefined) {
+      compactPending = !(await tryCompact($))
+    }
+
+    return next(e)
   })
 
   on('command.run', { command: 'context-band' }, async $ => {
@@ -216,6 +238,34 @@ export const register: Register = (on, rawOptions) => {
             <Text color={quotaColor(spend.percentUsed, 'five_hour', config)}>{` · Limit ${bar(spend.percentUsed, QUOTA_CELLS)} ${spend.percentUsed}%`}</Text>
           )}
           <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />
+          {e.props.view.agentId === undefined && (
+            <Button
+              key="compact"
+              label={compactArmed ? 'Confirm' : '⟲ Compact'}
+              onPress={() => {
+                if (!compactArmed) {
+                  compactArmed = true
+                  confirmTimer = $.clock.after(COMPACT_CONFIRM_MS, () => {
+                    confirmTimer = null
+                    compactArmed = false
+                    $.ui.invalidate('ui.render')
+                  })
+                } else {
+                  confirmTimer?.cancel()
+                  confirmTimer = null
+                  compactArmed = false
+                  if (e.props.isWorking) {
+                    compactPending = true
+                  } else {
+                    void tryCompact($).then(compacted => {
+                      compactPending = !compacted
+                    })
+                  }
+                }
+                $.ui.invalidate('ui.render')
+              }}
+            />
+          )}
         </Box>
       </Box>
     )
