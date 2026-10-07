@@ -11,6 +11,14 @@ declare module 'claude-code' {
         >
         names: Record<string, string>
       }
+      settings: {
+        warnAt?: number
+        errorAt?: number
+        refreshSeconds?: number
+        showEffort?: boolean
+        showCost?: boolean
+        showResetIn?: boolean
+      }
     }
   }
 }

@@ -1267,6 +1267,321 @@ test('the collapsed pill persists across a remount and /context-band restores it
 })
 
 
+test('the settings toggle swaps the readings row for the settings rows', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await ui.find({ type: 'Button', text: /⚙/ })).toBeDefined()
+
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
+  expect(await ui.find({ text: /Error 85/ })).toBeDefined()
+  expect(await ui.find({ text: /Refresh 7s/ })).toBeDefined()
+  expect(await ui.find({ text: /Context/ })).toBeUndefined()
+  expect(await ui.find({ text: /34\.2%/ })).toBeUndefined()
+
+  await ui.press({ key: 'done' })
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /Warn 60/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('a second settings press restores the readings row too', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
+
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /Warn 60/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('raising warning steps by five and lifts error out of the way', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  for (let i = 0; i < 8; i++) await ui.press({ key: 'warn+' })
+  expect(await ui.find({ text: /Warn 95/ })).toBeDefined()
+  expect(await ui.find({ text: /Error 100/ })).toBeDefined()
+  expect(await ui.find({ text: /Warn 100/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('lowering error steps by five and drops warning with it', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  for (let i = 0; i < 4; i++) await ui.press({ key: 'error-' })
+  expect(await ui.find({ text: /Error 65/ })).toBeDefined()
+  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
+  await ui.press({ key: 'error-' })
+  expect(await ui.find({ text: /Warn 55/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the refresh stepper steps by one and clamps at one', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'seconds+' })
+  await ui.press({ key: 'seconds+' })
+  await ui.press({ key: 'seconds+' })
+  expect(await ui.find({ text: /Refresh 10s/ })).toBeDefined()
+
+  for (let i = 0; i < 12; i++) await ui.press({ key: 'seconds-' })
+  expect(await ui.find({ text: /Refresh 1s/ })).toBeDefined()
+  await ui.press({ key: 'seconds-' })
+  expect(await ui.find({ text: /Refresh 1s/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the refresh stepper clamps at six hundred', { options: { refreshSeconds: 599 } }, async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /Refresh 599s/ })).toBeDefined()
+  await ui.press({ key: 'seconds+' })
+  expect(await ui.find({ text: /Refresh 600s/ })).toBeDefined()
+  await ui.press({ key: 'seconds+' })
+  expect(await ui.find({ text: /Refresh 600s/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('a stored threshold shadows the option and persists across a remount', { options: { errorThreshold: 50 } }, async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({
+      percent: 10,
+      tokens: 20_000,
+      rateLimits: [plan('five_hour', 65)],
+    }),
+  }))
+
+  const first = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect((await first.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('error')
+  await first.press({ key: 'settings' })
+  for (let i = 0; i < 5; i++) await first.press({ key: 'error+' })
+  expect(await first.find({ text: /Error 75/ })).toBeDefined()
+  await first.press({ key: 'done' })
+  expect((await first.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('warning')
+  await first.unmount()
+
+  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect((await again.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('warning')
+  await again.unmount()
+})
+
+test('the command restores the band but leaves the settings values alone', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'warn+' })
+  expect(await ui.find({ text: /Warn 65/ })).toBeDefined()
+
+  await $.command.run({
+    command: 'context-band',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(await ui.find({ text: /Warn 65/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /⚙/ })).toBeDefined()
+  await ui.press({ key: 'done' })
+  await ui.unmount()
+
+  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await again.press({ key: 'settings' })
+  expect(await again.find({ text: /Warn 65/ })).toBeDefined()
+  await again.unmount()
+})
+
+test('the settings toggles show their state and flip on press', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  expect((await ui.find({ type: 'Button', text: /Model & effort/ }))?.props.label).toBe('Model & effort on')
+  expect((await ui.find({ type: 'Button', text: /Reset ↺/ }))?.props.label).toBe('Reset ↺ on')
+  expect((await ui.find({ type: 'Button', text: /Cost/ }))?.props.label).toBe('Cost on')
+
+  await ui.press({ key: 'effort' })
+  expect((await ui.find({ type: 'Button', text: /Model & effort/ }))?.props.label).toBe('Model & effort off')
+  await ui.press({ key: 'reset' })
+  expect((await ui.find({ type: 'Button', text: /Reset ↺/ }))?.props.label).toBe('Reset ↺ off')
+  await ui.press({ key: 'cost' })
+  expect((await ui.find({ type: 'Button', text: /Cost/ }))?.props.label).toBe('Cost off')
+  await ui.unmount()
+})
+
+test('the cost toggle hides the session cost and persists', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 1.234 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await ui.find({ text: /\$1\.23/ })).toBeDefined()
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'cost' })
+  await ui.press({ key: 'done' })
+  expect(await ui.find({ text: /\$1\.23/ })).toBeUndefined()
+  await ui.unmount()
+
+  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await again.find({ text: /\$1\.23/ })).toBeUndefined()
+  await again.unmount()
+})
+
+test('the reset toggle hides the reset countdown and persists', async ($, on) => {
+  stubEnvironment(on)
+  mock.clock(on, { now: FIXED_NOW })
+  on('session.usage', () => ({
+    value: usageOf({
+      percent: 34.2,
+      tokens: 68_400,
+      rateLimits: [plan('five_hour', 23.5, minutesFromNow(133))],
+    }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'reset' })
+  await ui.press({ key: 'done' })
+  expect(await ui.find({ text: /↺2h13m/ })).toBeUndefined()
+  expect(await ui.find({ text: /23\.5%/ })).toBeDefined()
+  await ui.unmount()
+
+  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await again.find({ text: /↺2h13m/ })).toBeUndefined()
+  await again.unmount()
+})
+
+test('the effort toggle gates the model and scale and re-credits the path', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.42 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, bodyColumns: 50 },
+  })
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
+  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /work\/client-portal/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })).toBeUndefined()
+
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'effort' })
+  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the effort toggle gates the tracked model and scale in an agent view too', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', status: 'running' })])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  await runStep($, {
+    turnId: 't1',
+    index: 0,
+    model: 'glm-5.3-flash[1m]',
+    messageCount: 3,
+    effort: 'xhigh',
+    agentId: 'a1',
+  })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeDefined()
+
+  await ui.press({ key: 'settings' })
+  await ui.press({ key: 'effort' })
+  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeUndefined()
+  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeUndefined()
+  await ui.press({ key: 'done' })
+  expect(await ui.find({ text: /3\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /of 1\.0m/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the collapsed pill ignores the settings area', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'settings' })
+  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
+
+  await ui.press({ key: 'collapse' })
+  expect(await ui.find({ text: /◂/ })).toBeDefined()
+  expect(await ui.find({ text: /Warn 60/ })).toBeUndefined()
+
+  await ui.press({ key: 'pill' })
+  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
+  expect(await ui.find({ text: /◂/ })).toBeUndefined()
+  await ui.unmount()
+})
+
 test('the main conversation working flag rules the dot in the main view alone', async ($, on) => {
   stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', status: 'running' })])
   on('session.usage', () => ({

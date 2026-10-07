@@ -23,6 +23,12 @@
       "default": 7,
       "description": "Fallback redraw interval in seconds; turn ends update it at once"
     },
+    "showEffort": {
+      "type": "boolean",
+      "title": "Show model & effort",
+      "default": true,
+      "description": "Show the model name and its effort scale on the band"
+    },
     "showCost": {
       "type": "boolean",
       "title": "Show session cost",
