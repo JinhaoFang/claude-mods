@@ -2,6 +2,7 @@ declare module 'claude-code' {
   interface PluginState {
     'context-band': {
       isHidden: boolean
+      isCollapsed: boolean
       mainEffort: 'low' | 'medium' | 'high' | 'xhigh' | 'max' | null
       tracker: {
         loops: Record<
