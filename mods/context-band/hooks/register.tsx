@@ -2,6 +2,10 @@ import { atom, read, update } from 'claude-code'
 import type { PluginOptions, Register } from 'claude-code'
 
 const isHidden = atom({ plugin: 'context-band', key: 'isHidden' } as const, false)
+const tracker = atom(
+  { plugin: 'context-band', key: 'tracker' } as const,
+  { loops: {}, names: {} },
+)
 
 const BAR_CELLS = 12
 const QUOTA_CELLS = 3
@@ -98,6 +102,35 @@ export const register: Register = (on, rawOptions) => {
     return next(e)
   })
 
+  on('turn.step', async function* ($, e, next) {
+    const result = yield* next(e)
+    const agentId = e.agentId
+    try {
+      const roster = await $.agent.list()
+      const listed = new Set(roster.map(a => a.id))
+      await update($, tracker, t => {
+        const loops = { ...t.loops }
+        if (agentId && result.usage) {
+          loops[agentId] = {
+            fill:
+              result.usage.input_tokens +
+              result.usage.cache_read_input_tokens +
+              result.usage.cache_creation_input_tokens,
+            model: e.model,
+          }
+        }
+        for (const id of Object.keys(loops)) {
+          if (!listed.has(id)) delete loops[id]
+        }
+        const names = { ...t.names }
+        for (const a of roster) {
+          names[a.id] = a.name ?? a.type
+        }
+        return { loops, names }
+      })
+    } catch {}
+  })
+
   on('command.run', { command: 'context-band' }, async $ => {
     await update($, isHidden, () => false)
 
@@ -121,9 +154,23 @@ export const register: Register = (on, rawOptions) => {
     // session compacts, not the model's theoretical limit. The summary
     // breakdown is estimated locally and sends nothing.
     const bd = context.breakdown
-    const percent = bd ? bd.percentage : (context.percent ?? 0)
-    const window = bd ? bd.rawMaxTokens : context.window
-    const noReading = !bd && context.percent === undefined
+    const viewed = e.props.view.agentId
+    let percent = bd ? bd.percentage : (context.percent ?? 0)
+    let window = bd ? bd.rawMaxTokens : context.window
+    let noReading = !bd && context.percent === undefined
+    let label: string | undefined
+    let working = e.props.isWorking
+    if (viewed) {
+      const [tracked, roster] = await Promise.all([read($, tracker), $.agent.list()])
+      const entry = tracked.loops[viewed]
+      const info = roster.find(a => a.id === viewed)
+      label = info ? (info.name ?? info.type) : (tracked.names[viewed] ?? viewed.slice(0, 8))
+      working = info ? info.status === 'running' : false
+      window =
+        entry && entry.model !== model ? (/\[1m\]/.test(entry.model) ? 1_000_000 : 200_000) : context.window
+      noReading = !entry
+      percent = entry ? (entry.fill / window) * 100 : 0
+    }
     const color = noReading ? 'inactive' : colorFor(percent, config)
 
     // Adaptive, not a hard login-method check: subscription windows present ->
@@ -143,10 +190,9 @@ export const register: Register = (on, rawOptions) => {
     return (
       <Box flexDirection="column">
         <Box>
+          {label && <Text>{label} </Text>}
           <Text>{model} </Text>
-          <Text color={e.props.isWorking ? 'success' : 'inactive'}>
-            {e.props.isWorking ? '●' : '○'}{' '}
-          </Text>
+          <Text color={working ? 'success' : 'inactive'}>{working ? '●' : '○'}{' '}</Text>
           <Text dimColor>{shortenPath(cwd, model, e.props.bodyColumns)}</Text>
         </Box>
         <Box>
