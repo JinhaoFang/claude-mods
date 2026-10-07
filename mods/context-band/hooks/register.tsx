@@ -2,6 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-code'
 
 const isHidden = atom({ plugin: 'context-band', key: 'isHidden' } as const, false)
+const isCollapsed = atom({ plugin: 'context-band', key: 'isCollapsed' } as const, false)
 const tracker = atom(
   { plugin: 'context-band', key: 'tracker' } as const,
   { loops: {}, names: {} },
@@ -101,7 +102,7 @@ export const register: Register = (on, rawOptions) => {
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'context-band',
-      description: 'Show the context usage band above the prompt again',
+      description: 'Restore the context band above the prompt, expanded',
     })
     // Turn ends push a session.measure, which redraws at once; the clock only
     // covers what the engine does not measure, and its plain usage() is free.
@@ -155,8 +156,9 @@ export const register: Register = (on, rawOptions) => {
 
   on('command.run', { command: 'context-band' }, async $ => {
     await update($, isHidden, () => false)
+    await update($, isCollapsed, () => false)
 
-    return { text: 'Context band shown.' }
+    return { text: 'Context band expanded.' }
   })
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
@@ -194,6 +196,19 @@ export const register: Register = (on, rawOptions) => {
       percent = entry ? (entry.fill / window) * 100 : 0
     }
     const color = noReading ? 'inactive' : colorFor(percent, config)
+
+    if (await read($, isCollapsed)) {
+      return (
+        <Box>
+          <Button
+            key="pill"
+            label={label ? `◂ ${label} ${percent.toFixed(1)}%` : `◂ ${percent.toFixed(1)}%`}
+            dimColor={noReading}
+            onPress={() => update($, isCollapsed, () => false)}
+          />
+        </Box>
+      )
+    }
 
     // Adaptive, not a hard login-method check: subscription windows present ->
     // plan form (quota bars, no cost); otherwise the session cost, with a
@@ -266,6 +281,7 @@ export const register: Register = (on, rawOptions) => {
               }}
             />
           )}
+          <Button key="collapse" label="▾" onPress={() => update($, isCollapsed, () => true)} />
         </Box>
       </Box>
     )

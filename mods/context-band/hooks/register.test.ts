@@ -434,7 +434,7 @@ test('a reading below 60% draws the context bar in the success colour', async ($
   await ui.unmount()
 })
 
-test('the Hide button hides the band until /context-band shows it again', async ($, on) => {
+test('the Hide button hides the band until /context-band restores it expanded', async ($, on) => {
   stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
@@ -450,6 +450,10 @@ test('the Hide button hides the band until /context-band shows it again', async 
   await ui.press({ key: 'hide' })
   expect(await ui.find({ text: /Context/ })).toBeUndefined()
   expect(await ui.find({ text: /the engine band/ })).toBeDefined()
+  await ui.unmount()
+
+  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await again.find({ text: /the engine band/ })).toBeDefined()
 
   await $.command.run({
     command: 'context-band',
@@ -457,8 +461,9 @@ test('the Hide button hides the band until /context-band shows it again', async 
     origin: { kind: 'composer' },
     presentation: { isFullscreen: false, columns: 80 },
   })
-  expect(await ui.find({ text: /Context/ })).toBeDefined()
-  await ui.unmount()
+  expect(await again.find({ text: /Context/ })).toBeDefined()
+  expect(await again.find({ text: /◂/ })).toBeUndefined()
+  await again.unmount()
 })
 
 test('the compact button compacts on the second press alone', async ($, on) => {
@@ -533,6 +538,7 @@ test('an agent view draws no compact button', async ($, on) => {
   expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
   expect(await ui.find({ type: 'Button', text: /Hide/ })).toBeDefined()
+  expect(await ui.find({ type: 'Button', text: /▾/ })).toBeDefined()
   await ui.press({ key: 'compact' }).catch(() => undefined)
   expect(compacts).toBe(0)
   await ui.unmount()
@@ -952,6 +958,125 @@ test('the working dot follows the viewed loop status in an agent view', async ($
   expect(await idle.find({ text: /○/ })).toBeDefined()
   expect(await idle.find({ text: /●/ })).toBeUndefined()
   await idle.unmount()
+})
+
+test('the collapse button draws the pill and pressing it expands again', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({
+      percent: 34.2,
+      tokens: 68_400,
+      cost: { usd: 0.2 },
+      breakdown: breakdownOf(44.4, 160_000),
+    }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'collapse' })
+  expect((await ui.find({ type: 'Button', text: /◂/ }))?.props.label).toBe('◂ 44.4%')
+  expect(await ui.find({ text: /Context/ })).toBeUndefined()
+
+  await ui.press({ key: 'pill' })
+  expect(await ui.find({ text: /44\.4%/ })).toBeDefined()
+  expect(await ui.find({ text: /◂/ })).toBeUndefined()
+  await ui.unmount()
+})
+
+test('the pill names the viewed agent in an agent view', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', name: 'scout' })])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+  on('turn.step', async function* ($, e) {
+    return {
+      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
+      turnId: e.turnId,
+      index: e.index,
+    }
+  })
+
+  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+  await ui.press({ key: 'collapse' })
+  expect((await ui.find({ type: 'Button', text: /◂/ }))?.props.label).toBe('◂ scout 16.0%')
+  await ui.unmount()
+})
+
+test('an agent view with no completed step shows a dim zero pill', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, view: { agentId: 'a1' } },
+  })
+  await ui.press({ key: 'collapse' })
+  const pill = await ui.find({ type: 'Button', text: /◂/ })
+  expect(pill?.props.label).toBe('◂ Explore 0.0%')
+  expect(pill?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('the collapsed pill yields when a survey holds it', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
+  }))
+  on('ui.render', { component: 'AbovePrompt' }, () => ({
+    type: 'Box',
+    children: ['the engine band'],
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'collapse' })
+  expect(await ui.find({ text: /◂/ })).toBeDefined()
+  await ui.unmount()
+
+  const surveyed = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, hasSurvey: true },
+  })
+  expect(await surveyed.find({ text: /the engine band/ })).toBeDefined()
+  expect(await surveyed.find({ text: /◂/ })).toBeUndefined()
+  await surveyed.unmount()
+})
+
+test('the collapsed pill persists across a remount and /context-band restores it expanded', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  await ui.press({ key: 'collapse' })
+  expect(await ui.find({ text: /◂/ })).toBeDefined()
+  await ui.unmount()
+
+  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await again.find({ text: /◂/ })).toBeDefined()
+  expect(await again.find({ text: /Context/ })).toBeUndefined()
+
+  await $.command.run({
+    command: 'context-band',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 80 },
+  })
+  expect(await again.find({ text: /50\.0%/ })).toBeDefined()
+  expect(await again.find({ text: /◂/ })).toBeUndefined()
+  await again.unmount()
 })
 
 test('the main conversation working flag rules the dot in the main view alone', async ($, on) => {
