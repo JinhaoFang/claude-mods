@@ -5,6 +5,7 @@ const isHidden = atom({ plugin: 'context-band', key: 'isHidden' } as const, fals
 
 const BAR_CELLS = 12
 const QUOTA_CELLS = 3
+const PATH_CELLS = 12
 
 interface Config {
   warnAt: number
@@ -67,6 +68,15 @@ function bar(percent: number, cells: number): string {
   return '█'.repeat(filled) + '░'.repeat(cells - filled)
 }
 
+function shortenPath(cwd: string, model: string, bodyColumns: number): string {
+  const budget = bodyColumns - model.length - PATH_CELLS
+  if (cwd.length <= budget) return cwd
+  const segments = cwd.split('/').filter(Boolean)
+  const lastTwo = segments.slice(-2).join('/')
+  if (lastTwo.length <= budget) return lastTwo
+  return segments[segments.length - 1] ?? cwd
+}
+
 export const register: Register = (on, rawOptions) => {
   const config = readConfig(rawOptions)
 
@@ -100,9 +110,12 @@ export const register: Register = (on, rawOptions) => {
     }
 
     const { Box, Text, Button } = $.ui.resolve(e)
-    const { context, rateLimits, cost } = await $.session.usage({
-      breakdown: 'summary',
-    })
+    const [usage, model, cwd] = await Promise.all([
+      $.session.usage({ breakdown: 'summary' }),
+      $.session.model(),
+      $.session.cwd(),
+    ])
+    const { context, rateLimits, cost } = usage
 
     // The compaction window is the honest gauge: the room left before the
     // session compacts, not the model's theoretical limit. The summary
@@ -128,27 +141,36 @@ export const register: Register = (on, rawOptions) => {
       : undefined
 
     return (
-      <Box>
-        <Text dimColor>Context </Text>
-        <Text color={color}>{bar(percent, BAR_CELLS)} </Text>
-        <Text color={color} bold={!noReading}>
-          {percent.toFixed(1)}%
-        </Text>
-        <Text dimColor> of {formatTokens(window)}</Text>
-        {plans.map(p => (
-          <Text
-            key={p.kind}
-            color={quotaColor(p.percentUsed, p.kind, config)}
-          >{` · ${bar(p.percentUsed, QUOTA_CELLS)} ${p.percentUsed}%`}</Text>
-        ))}
-        {resetIn && <Text dimColor>{resetIn}</Text>}
-        {config.showCost && plans.length === 0 && cost !== undefined && (
-          <Text dimColor>{` · $${cost.usd.toFixed(2)}`}</Text>
-        )}
-        {spend && (
-          <Text color={quotaColor(spend.percentUsed, 'five_hour', config)}>{` · Limit ${bar(spend.percentUsed, QUOTA_CELLS)} ${spend.percentUsed}%`}</Text>
-        )}
-        <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />
+      <Box flexDirection="column">
+        <Box>
+          <Text>{model} </Text>
+          <Text color={e.props.isWorking ? 'success' : 'inactive'}>
+            {e.props.isWorking ? '●' : '○'}{' '}
+          </Text>
+          <Text dimColor>{shortenPath(cwd, model, e.props.bodyColumns)}</Text>
+        </Box>
+        <Box>
+          <Text dimColor>Context </Text>
+          <Text color={color}>{bar(percent, BAR_CELLS)} </Text>
+          <Text color={color} bold={!noReading}>
+            {percent.toFixed(1)}%
+          </Text>
+          <Text dimColor> of {formatTokens(window)}</Text>
+          {plans.map(p => (
+            <Text
+              key={p.kind}
+              color={quotaColor(p.percentUsed, p.kind, config)}
+            >{` · ${bar(p.percentUsed, QUOTA_CELLS)} ${p.percentUsed}%`}</Text>
+          ))}
+          {resetIn && <Text dimColor>{resetIn}</Text>}
+          {config.showCost && plans.length === 0 && cost !== undefined && (
+            <Text dimColor>{` · $${cost.usd.toFixed(2)}`}</Text>
+          )}
+          {spend && (
+            <Text color={quotaColor(spend.percentUsed, 'five_hour', config)}>{` · Limit ${bar(spend.percentUsed, QUOTA_CELLS)} ${spend.percentUsed}%`}</Text>
+          )}
+          <Button key="hide" label="Hide" onPress={() => update($, isHidden, () => true)} />
+        </Box>
       </Box>
     )
   })

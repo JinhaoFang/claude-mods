@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type {
+  On,
   SessionBreakdown,
   SessionBreakdownInput,
   SessionCost,
@@ -48,6 +49,11 @@ function plan(kind: string, percentUsed: number, resetsAt?: string): SessionRate
   return { kind, percentUsed, ...(resetsAt ? { resetsAt } : {}) }
 }
 
+function stubEnvironment(on: On, model = 'Opus 4.6', cwd = '/root/project/claude-mods') {
+  on('session.model', () => ({ value: model }))
+  on('session.cwd', () => ({ value: cwd }))
+}
+
 function breakdownOf(percentage: number, rawMaxTokens: number): SessionBreakdown {
   return {
     categories: [],
@@ -65,7 +71,137 @@ function breakdownOf(percentage: number, rawMaxTokens: number): SessionBreakdown
   }
 }
 
+test('the band draws the environment row above the readings row', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.42 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect((await ui.find({ type: 'Box' }))?.props.flexDirection).toBe('column')
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the model name shows before the first turn completes', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: {
+      startedAt: 0,
+      context: { tokens: 0, window: 200_000 },
+      rateLimits: [],
+      cost: { usd: 0 },
+    } satisfies SessionUsage,
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('the working indicator follows the main conversation working flag', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+
+  const busy = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, isWorking: true },
+  })
+  expect(await busy.find({ text: /●/ })).toBeDefined()
+  expect(await busy.find({ text: /○/ })).toBeUndefined()
+  await busy.unmount()
+
+  const idle = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  expect(await idle.find({ text: /○/ })).toBeDefined()
+  expect(await idle.find({ text: /●/ })).toBeUndefined()
+  await idle.unmount()
+})
+
+test('the session directory shows in dim colour', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+
+  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  const path = await ui.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })
+  expect(path).toBeDefined()
+  expect(path?.props.dimColor).toBe(true)
+  await ui.unmount()
+})
+
+test('the directory shortens last-two-segments first, then the last one', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
+  }))
+
+  const wide = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, bodyColumns: 80 },
+  })
+  expect(await wide.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })).toBeDefined()
+  await wide.unmount()
+
+  const medium = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, bodyColumns: 44 },
+  })
+  expect(await medium.find({ type: 'Text', text: /work\/client-portal/ })).toBeDefined()
+  expect(await medium.find({ type: 'Text', text: /\/home/ })).toBeUndefined()
+  await medium.unmount()
+
+  const narrow = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, bodyColumns: 28 },
+  })
+  expect(await narrow.find({ type: 'Text', text: /client-portal/ })).toBeDefined()
+  expect(await narrow.find({ type: 'Text', text: /work\// })).toBeUndefined()
+  await narrow.unmount()
+})
+
+test('a narrow terminal keeps every reading while the path shortens', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  mock.clock(on, { now: FIXED_NOW })
+  on('session.usage', () => ({
+    value: usageOf({
+      percent: 34.2,
+      tokens: 68_400,
+      rateLimits: [
+        plan('five_hour', 23.5, minutesFromNow(133)),
+        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
+      ],
+      cost: { usd: 0.42 },
+    }),
+  }))
+
+  const ui = await $.ui.mount({
+    plugin: 'context-band',
+    surface: 'terminal',
+    ...BAND,
+    props: { ...BAND.props, bodyColumns: 28 },
+  })
+  expect(await ui.find({ type: 'Text', text: /client-portal/ })).toBeDefined()
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
+  expect(await ui.find({ type: 'Text', text: /8%/ })).toBeDefined()
+  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
+  await ui.unmount()
+})
+
 test('a subscription session shows both windows and the reset time', async ($, on) => {
+  stubEnvironment(on)
   mock.clock(on, { now: FIXED_NOW })
   on('session.usage', () => ({
     value: usageOf({
@@ -96,6 +232,7 @@ test('a subscription session shows both windows and the reset time', async ($, o
 })
 
 test('a window past the thresholds turns to warning, then error', async ($, on) => {
+  stubEnvironment(on)
   mock.clock(on, { now: FIXED_NOW })
   let limits = [plan('five_hour', 65, minutesFromNow(60))]
   on('session.usage', () => ({
@@ -121,6 +258,7 @@ test('a window past the thresholds turns to warning, then error', async ($, on) 
 })
 
 test('an API-key session shows the session cost alone', async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 1.234 } }),
   }))
@@ -133,6 +271,7 @@ test('an API-key session shows the session cost alone', async ($, on) => {
 })
 
 test('a gateway spend limit is appended to the cost', async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({
       percent: 34.2,
@@ -152,6 +291,7 @@ test('a gateway spend limit is appended to the cost', async ($, on) => {
 })
 
 test('with a breakdown the percent measures the compaction window', async ($, on) => {
+  stubEnvironment(on)
   const usage = usageOf({
     percent: 34.2,
     tokens: 68_400,
@@ -168,6 +308,7 @@ test('with a breakdown the percent measures the compaction window', async ($, on
 })
 
 test('a session.measure redraws the band without a remount', async ($, on) => {
+  stubEnvironment(on)
   let usage = usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } })
   on('session.usage', () => ({ value: usage }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
@@ -186,6 +327,7 @@ test('a session.measure redraws the band without a remount', async ($, on) => {
 })
 
 test('errorThreshold moves the error colour', { options: { errorThreshold: 50 } }, async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({
       percent: 10,
@@ -200,6 +342,7 @@ test('errorThreshold moves the error colour', { options: { errorThreshold: 50 } 
 })
 
 test('warningThreshold moves the warning colour', { options: { warningThreshold: 90 } }, async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({
       percent: 10,
@@ -214,6 +357,7 @@ test('warningThreshold moves the warning colour', { options: { warningThreshold:
 })
 
 test('showCost: false hides the session cost', { options: { showCost: false } }, async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 1.0 } }),
   }))
@@ -224,6 +368,7 @@ test('showCost: false hides the session cost', { options: { showCost: false } },
 })
 
 test('showResetIn: false hides the reset time', { options: { showResetIn: false } }, async ($, on) => {
+  stubEnvironment(on)
   mock.clock(on, { now: FIXED_NOW })
   on('session.usage', () => ({
     value: usageOf({
@@ -240,6 +385,7 @@ test('showResetIn: false hides the reset time', { options: { showResetIn: false 
 })
 
 test('a reading below 60% draws the context bar in the success colour', async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({ percent: 40, tokens: 80_000, cost: { usd: 0.1 } }),
   }))
@@ -251,6 +397,7 @@ test('a reading below 60% draws the context bar in the success colour', async ($
 })
 
 test('the Hide button hides the band until /context-band shows it again', async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
   }))
@@ -277,6 +424,7 @@ test('the Hide button hides the band until /context-band shows it again', async 
 })
 
 test('the band yields when a survey holds it', async ($, on) => {
+  stubEnvironment(on)
   on('session.usage', () => ({
     value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
   }))
