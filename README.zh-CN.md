@@ -16,6 +16,7 @@ mod 是一种 Claude Code 插件：它的 JavaScript / TypeScript 代码注册�
 | [block-destructive-commands](mods/block-destructive-commands/README.md) | 在执行前拦截破坏性 Bash 命令（对根目录递归 rm、强推、hard reset、破坏性 SQL、格式化磁盘） | `/plugin install block-destructive-commands --marketplace JinhaoFang/claude-mods` |
 | [agent-flow](mods/agent-flow/README.md) | 输入框旁实时展示会话的子代理与队友树；无法绘制面板时以文本打印 | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
 | [image-view](mods/image-view/README.md) | 在输入框上方显示粘贴图片的缩略图，而不是光秃秃的 `[Image #1]` 标签 | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
+| [redact](mods/redact/README.zh-CN.md) | 在敏感数据进入模型上下文之前改写为占位符（邮箱、IP、凭证、地址） | `/plugin install redact --marketplace JinhaoFang/claude-mods` |
 
 ## 安装
 

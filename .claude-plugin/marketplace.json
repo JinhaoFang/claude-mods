@@ -38,6 +38,15 @@
       "tags": ["images", "paste", "preview", "thumbnails", "mod", "terminal"],
       "author": { "name": "Jarrod Watts", "url": "https://github.com/jarrodwatts" },
       "homepage": "https://github.com/jarrodwatts/claude-image-view"
+    },
+    {
+      "name": "redact",
+      "source": "./mods/redact",
+      "description": "Rewrites sensitive data (emails, IPs, credentials, addresses) into placeholders before it enters the model context.",
+      "category": "security",
+      "tags": ["security", "redaction", "privacy", "secrets", "hooks"],
+      "author": { "name": "JinhaoFang" },
+      "homepage": "https://github.com/JinhaoFang/claude-mods/tree/main/mods/redact"
     }
   ]
 }

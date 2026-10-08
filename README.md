@@ -16,6 +16,7 @@ The catalog lists every mod in this marketplace; each entry installs from here.
 | [block-destructive-commands](mods/block-destructive-commands/README.md) | Denies destructive Bash commands (recursive rm on roots, force push, hard reset, destructive SQL, disk formatting) before they run | `/plugin install block-destructive-commands --marketplace JinhaoFang/claude-mods` |
 | [agent-flow](mods/agent-flow/README.md) | Live tree of the session's subagents and teammates in a pane beside the transcript; prints as text where no pane can be drawn | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
 | [image-view](mods/image-view/README.md) | Thumbnails of the images you paste above the prompt, instead of bare `[Image #1]` tags | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
+| [redact](mods/redact/README.md) | Rewrites sensitive data (emails, IPs, credentials, addresses) into placeholders before it enters the model context | `/plugin install redact --marketplace JinhaoFang/claude-mods` |
 
 ## Install
 
