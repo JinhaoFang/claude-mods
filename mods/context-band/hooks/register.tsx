@@ -22,6 +22,8 @@ import type { EngineInterface, PluginOptions, Register, Timer } from 'claude-cod
 // turn ends push a session.measure and redraw anyway, the clock only covers
 // what the engine does not measure. The open/close flag is register-activation
 // scope like the compact arm: a hot reload closes it, a session restart too.
+// The compact confirm timeout rides $.clock.every, one-shot by self-cancel —
+// $.clock.after is not in the public release the repo check runs against.
 //
 // Readings — the gauge measures the compaction window (the summary breakdown,
 // estimated locally, sends nothing), not the model's theoretical limit. The
@@ -366,7 +368,8 @@ export const register: Register = (on, rawOptions) => {
               onPress={() => {
                 if (!compactArmed) {
                   compactArmed = true
-                  confirmTimer = $.clock.after(COMPACT_CONFIRM_MS, () => {
+                  confirmTimer = $.clock.every(COMPACT_CONFIRM_MS, () => {
+                    confirmTimer?.cancel()
                     confirmTimer = null
                     compactArmed = false
                     $.ui.invalidate('ui.render')

@@ -474,7 +474,7 @@ test('the compact button compacts on the second press alone', async ($, on) => {
   let compacts = 0
   on('session.compact', () => {
     compacts += 1
-    return { value: { skip: 'test' } }
+    return { skip: 'test' }
   })
 
   const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
@@ -501,7 +501,7 @@ test('the confirm reverts to the idle form when the timeout passes', async ($, o
   let compacts = 0
   on('session.compact', () => {
     compacts += 1
-    return { value: { skip: 'test' } }
+    return { skip: 'test' }
   })
 
   const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
@@ -526,7 +526,7 @@ test('an agent view draws no compact button', async ($, on) => {
   let compacts = 0
   on('session.compact', () => {
     compacts += 1
-    return { value: { skip: 'test' } }
+    return { skip: 'test' }
   })
 
   const ui = await $.ui.mount({
@@ -552,7 +552,7 @@ test('a compact pressed during a running turn waits for the turn to end', async 
   let compacts = 0
   on('session.compact', () => {
     compacts += 1
-    return { value: { skip: 'test' } }
+    return { skip: 'test' }
   })
   on('turn.complete', () => ({ text: '' }))
 
