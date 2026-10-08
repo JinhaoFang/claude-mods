@@ -1,0 +1,51 @@
+{
+  "name": "redact",
+  "version": "0.1.0",
+  "description": "Rewrites sensitive data (emails, IPs, credentials, addresses) out of what enters the model context",
+  "author": { "name": "JinhaoFang" },
+  "types": "./types/index.d.ts",
+  "userConfig": {
+    "emails": {
+      "type": "boolean",
+      "title": "Redact email addresses",
+      "default": true,
+      "description": "Mask email addresses appearing in tool results and attachments"
+    },
+    "ipAddresses": {
+      "type": "boolean",
+      "title": "Redact IP addresses",
+      "default": true,
+      "description": "Mask IPv4 and IPv6 addresses appearing in tool results and attachments"
+    },
+    "credentials": {
+      "type": "boolean",
+      "title": "Redact keys and credentials",
+      "default": true,
+      "description": "Mask API keys, tokens, JWTs, private key blocks and secret assignments"
+    },
+    "addresses": {
+      "type": "boolean",
+      "title": "Redact residential addresses",
+      "default": true,
+      "description": "Mask street-style and Chinese-format residential addresses"
+    },
+    "phoneNumbers": {
+      "type": "boolean",
+      "title": "Redact phone numbers",
+      "default": false,
+      "description": "Mask phone numbers; off by default because plain digit runs false-positive"
+    },
+    "scrubPrompt": {
+      "type": "boolean",
+      "title": "Also scrub typed prompts",
+      "default": false,
+      "description": "Additionally rewrite secrets in rows the user typed; off by default so the model sees what was asked"
+    },
+    "quiet": {
+      "type": "boolean",
+      "title": "Quiet mode",
+      "default": false,
+      "description": "Suppress the toast shown when a row is redacted"
+    }
+  }
+}
