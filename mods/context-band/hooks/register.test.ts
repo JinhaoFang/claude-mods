@@ -1,9 +1,9 @@
 import { expect, mock, test } from 'claude-code/testing'
+import type { Engine } from 'claude-code/testing'
 import type {
   AgentInfo,
   On,
-  SessionBreakdown,
-  SessionBreakdownInput,
+  SessionContextBreakdown,
   SessionCost,
   SessionRateLimit,
   SessionUsage,
@@ -16,15 +16,14 @@ const BAND = {
     hasSurvey: false,
     isWorking: false,
     maxRows: 10,
-    bodyColumns: 80,
+    bodyColumns: 120,
     scroll: { offset: 0, bodyRows: 10 },
     view: {},
   },
 }
 
 const FIXED_NOW = 1_760_000_000_000
-const minutesFromNow = (m: number) =>
-  new Date(FIXED_NOW + m * 60_000).toISOString()
+const minutesFromNow = (m: number) => new Date(FIXED_NOW + m * 60_000).toISOString()
 
 function usageOf(opts: {
   percent: number
@@ -32,7 +31,7 @@ function usageOf(opts: {
   window?: number
   rateLimits?: SessionRateLimit[]
   cost?: SessionCost
-  breakdown?: SessionBreakdown
+  breakdown?: SessionContextBreakdown
 }): SessionUsage {
   return {
     startedAt: 0,
@@ -51,7 +50,13 @@ function plan(kind: string, percentUsed: number, resetsAt?: string): SessionRate
   return { kind, percentUsed, ...(resetsAt ? { resetsAt } : {}) }
 }
 
+const SUBSCRIPTION = [
+  plan('five_hour', 23.5, minutesFromNow(133)),
+  plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
+]
+
 function stubEnvironment(on: On, model = 'Opus 4.6', cwd = '/root/project/claude-mods', agents: AgentInfo[] = []) {
+  mock.clock(on, { now: FIXED_NOW })
   on('session.model', () => ({ value: model }))
   on('session.cwd', () => ({ value: cwd }))
   on('agent.list', () => ({ value: agents }))
@@ -67,32 +72,34 @@ function agentOf(opts: { id: string; type: string; status?: 'running' | 'idle'; 
   }
 }
 
-function turnStepResultOf(model: string, tokens: { input: number; cacheRead: number; cacheCreation: number }) {
-  return {
-    turnId: '',
-    index: 0,
-    answer: '',
-    toolUses: [],
-    stopReason: 'end_turn',
-    usage: {
-      input_tokens: tokens.input,
-      output_tokens: 500,
-      cache_read_input_tokens: tokens.cacheRead,
-      cache_creation_input_tokens: tokens.cacheCreation,
-      model,
-    },
-  } as const
+function stubSteps(on: On, tokensFor: (e: TurnStepInput) => number = () => 32_000) {
+  on('turn.step', async function* ($, e) {
+    return {
+      turnId: e.turnId,
+      index: e.index,
+      answer: '',
+      toolUses: [],
+      stopReason: 'end_turn',
+      usage: {
+        input_tokens: tokensFor(e),
+        output_tokens: 500,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        model: e.model,
+      },
+    } as const
+  })
 }
 
 async function runStep(
   $: { turn: { step: (input: TurnStepInput) => AsyncIterable<unknown> } },
-  input: TurnStepInput,
+  input: Partial<TurnStepInput>,
 ): Promise<void> {
-  for await (const _chunk of $.turn.step(input)) {
+  for await (const _chunk of $.turn.step({ turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, ...input })) {
   }
 }
 
-function breakdownOf(percentage: number, rawMaxTokens: number): SessionBreakdown {
+function breakdownOf(percentage: number, rawMaxTokens: number): SessionContextBreakdown {
   return {
     categories: [],
     totalTokens: Math.round((percentage / 100) * rawMaxTokens),
@@ -106,1775 +113,417 @@ function breakdownOf(percentage: number, rawMaxTokens: number): SessionBreakdown
     mcpTools: [],
     agents: [],
     isAutoCompactEnabled: true,
+    apiUsage: null,
   }
 }
 
-test('the band draws the environment row above the readings row', async ($, on) => {
+type Drawn = { type?: string; props?: Record<string, unknown>; children?: unknown }
+
+function textOf(node: unknown): string {
+  if (typeof node === 'string' || typeof node === 'number') return String(node)
+  if (Array.isArray(node)) return node.map(textOf).join('')
+  if (!node || typeof node !== 'object') return ''
+  return textOf((node as Drawn).children)
+}
+
+// The column's two rows, each as the text it draws.
+async function rowsOf(ui: { find: (q: { type: string }) => Promise<unknown> }): Promise<string[]> {
+  const column = (await ui.find({ type: 'Box' })) as Drawn | undefined
+  const rows = ((column?.children ?? []) as Drawn[]).filter(child => child?.type === 'Box')
+  return rows.map(textOf)
+}
+
+function mountBand(
+  $: Engine,
+  props: Partial<typeof BAND.props> = {},
+  surface: 'terminal' | 'desktop' = 'terminal',
+) {
+  return $.ui.mount({ plugin: 'context-band', surface, ...BAND, props: { ...BAND.props, ...props } })
+}
+
+// ---------------------------------------------------------------- layout
+
+test('the band draws the environment row above the readings row, with no buttons', async ($, on) => {
   stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.42 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect((await ui.find({ type: 'Box' }))?.props.flexDirection).toBe('column')
-  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the model name shows before the first turn completes', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: {
-      startedAt: 0,
-      context: { tokens: 0, window: 200_000 },
-      rateLimits: [],
-      cost: { usd: 0 },
-    } satisfies SessionUsage,
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the working indicator follows the main conversation working flag', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const busy = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, isWorking: true },
-  })
-  expect(await busy.find({ text: /●/ })).toBeDefined()
-  expect(await busy.find({ text: /○/ })).toBeUndefined()
-  await busy.unmount()
-
-  const idle = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await idle.find({ text: /○/ })).toBeDefined()
-  expect(await idle.find({ text: /●/ })).toBeUndefined()
-  await idle.unmount()
-})
-
-test('the session directory shows in dim colour', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  const path = await ui.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })
-  expect(path).toBeDefined()
-  expect(path?.props.dimColor).toBe(true)
-  await ui.unmount()
-})
-
-test('the directory shortens last-two-segments first, then the last one', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const wide = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, bodyColumns: 80 },
-  })
-  expect(await wide.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })).toBeDefined()
-  await wide.unmount()
-
-  const medium = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, bodyColumns: 60 },
-  })
-  expect(await medium.find({ type: 'Text', text: /work\/client-portal/ })).toBeDefined()
-  expect(await medium.find({ type: 'Text', text: /\/home/ })).toBeUndefined()
-  await medium.unmount()
-
-  const narrow = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, bodyColumns: 28 },
-  })
-  expect(await narrow.find({ type: 'Text', text: /client-portal/ })).toBeDefined()
-  expect(await narrow.find({ type: 'Text', text: /work\// })).toBeUndefined()
-  await narrow.unmount()
-})
-
-test('a narrow terminal keeps every reading while the path shortens', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [
-        plan('five_hour', 23.5, minutesFromNow(133)),
-        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
-      ],
-      cost: { usd: 0.42 },
-    }),
-  }))
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, bodyColumns: 28 },
-  })
-  expect(await ui.find({ type: 'Text', text: /client-portal/ })).toBeDefined()
-  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /8%/ })).toBeDefined()
-  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('a subscription session shows both windows and the reset time', async ($, on) => {
-  stubEnvironment(on)
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [
-        plan('five_hour', 23.5, minutesFromNow(133)),
-        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
-      ],
-      cost: { usd: 0.42 },
-    }),
-  }))
+  on('session.usage', () => ({ value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.42 } }) }))
 
   for (const surface of ['terminal', 'desktop'] as const) {
-    const ui = await $.ui.mount({ plugin: 'context-band', surface, ...BAND })
-    expect((await ui.find({ text: /34\.2%/ }))?.text).toContain('34.2%')
-    expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
-
-    const fiveHour = await ui.find({ type: 'Text', text: /23\.5%/ })
-    expect(fiveHour?.props.color).toBe('suggestion')
-    const sevenDay = await ui.find({ type: 'Text', text: /8%/ })
-    expect(sevenDay?.props.color).toBe('remember')
-
-    expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
-    expect(await ui.find({ text: /\$/ })).toBeUndefined()
+    const ui = await mountBand($, {}, surface)
+    const [env, readings] = await rowsOf(ui)
+    expect(env).toContain('Opus 4.6')
+    expect(env).toContain('/root/project/claude-mods')
+    expect(readings).toContain('Context ')
+    expect(readings).toContain('34.2%')
+    expect(readings).toContain('of 200.0k')
+    expect(await ui.find({ type: 'Button' })).toBeUndefined()
     await ui.unmount()
   }
 })
 
-test('a window past the thresholds turns to warning, then error', async ($, on) => {
+test('the band yields when a survey holds it', async ($, on) => {
   stubEnvironment(on)
-  mock.clock(on, { now: FIXED_NOW })
-  let limits = [plan('five_hour', 65, minutesFromNow(60))]
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, rateLimits: limits }),
-  }))
+  on('session.usage', () => ({ value: usageOf({ percent: 34.2, tokens: 68_400 }) }))
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', children: ['the engine band'] }))
 
-  const first = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-  })
-  expect((await first.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('warning')
-  await first.unmount()
-
-  limits = [plan('five_hour', 90, minutesFromNow(60))]
-  const second = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-  })
-  expect((await second.find({ type: 'Text', text: /90%/ }))?.props.color).toBe('error')
-  await second.unmount()
-})
-
-test('an API-key session shows the session cost alone', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 1.234 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /\$1\.23/ })).toBeDefined()
-  expect(await ui.find({ text: /↺/ })).toBeUndefined()
-  expect(await ui.find({ text: /Limit/ })).toBeUndefined()
+  const ui = await mountBand($, { hasSurvey: true })
+  expect(await ui.find({ text: /34\.2%/ })).toBeUndefined()
+  expect(await ui.find({ text: /the engine band/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('a gateway spend limit is appended to the cost', async ($, on) => {
+test('the working dot follows the main conversation working flag', async ($, on) => {
   stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [plan('spend_limit', 65.5)],
-      cost: { usd: 0.5 },
-    }),
-  }))
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
 
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /\$0\.50/ })).toBeDefined()
-  const limit = await ui.find({ type: 'Text', text: /Limit/ })
-  expect(limit).toBeDefined()
-  expect(limit?.text).toContain('65.5%')
-  expect(limit?.props.color).toBe('warning')
+  const busy = await mountBand($, { isWorking: true })
+  expect((await rowsOf(busy))[0]).toContain('●')
+  await busy.unmount()
+
+  const idle = await mountBand($)
+  expect((await rowsOf(idle))[0]).toContain('○')
+  await idle.unmount()
+})
+
+test('the directory shows dim and shortens to the last two segments, then the last one', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
+
+  const wide = await mountBand($, { bodyColumns: 80 })
+  const path = await wide.find({ type: 'Text', text: /^\/home\/jh\/work\/client-portal$/ })
+  expect(path?.props.dimColor).toBe(true)
+  await wide.unmount()
+
+  const medium = await mountBand($, { bodyColumns: 34 })
+  expect((await rowsOf(medium))[0]).toMatch(/ work\/client-portal$/)
+  await medium.unmount()
+
+  const narrow = await mountBand($, { bodyColumns: 20 })
+  expect((await rowsOf(narrow))[0]).toMatch(/ client-portal$/)
+  await narrow.unmount()
+})
+
+// ---------------------------------------------------------------- effort
+
+test('the effort level shows bare beside the model after a main-loop step', async ($, on) => {
+  stubEnvironment(on)
+  stubSteps(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
+
+  const before = await mountBand($)
+  expect((await rowsOf(before))[0]).toMatch(/^Opus 4\.6 ○ /)
+  await before.unmount()
+
+  await runStep($, { effort: 'xhigh' })
+  const after = await mountBand($)
+  const [env] = await rowsOf(after)
+  expect(env).toMatch(/^Opus 4\.6 · xhigh ○ /)
+  expect(env).not.toContain('effort')
+  expect(env).not.toMatch(/[█░]/)
+  await after.unmount()
+})
+
+test('the effort follows the latest main-loop step and drops when it carries none', async ($, on) => {
+  stubEnvironment(on)
+  stubSteps(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
+
+  const ui = await mountBand($)
+  await runStep($, { effort: 'low' })
+  expect((await rowsOf(ui))[0]).toMatch(/^Opus 4\.6 · low /)
+  await runStep($, { effort: 'max', index: 1 })
+  expect((await rowsOf(ui))[0]).toMatch(/^Opus 4\.6 · max /)
+  await runStep($, { index: 2 })
+  expect((await rowsOf(ui))[0]).toMatch(/^Opus 4\.6 ○ /)
   await ui.unmount()
 })
+
+test('a numeric effort is shown as its number', async ($, on) => {
+  stubEnvironment(on)
+  stubSteps(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
+
+  await runStep($, { effort: 16_000 })
+  const ui = await mountBand($)
+  expect((await rowsOf(ui))[0]).toMatch(/^Opus 4\.6 · 16000 /)
+  await ui.unmount()
+})
+
+// ---------------------------------------------------------------- quota
+
+test('each plan window is labelled and carries its own reset time right after it', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, rateLimits: SUBSCRIPTION, cost: { usd: 0.42 } }),
+  }))
+
+  for (const surface of ['terminal', 'desktop'] as const) {
+    const ui = await mountBand($, {}, surface)
+    const [, readings] = await rowsOf(ui)
+    expect(readings).toBe(
+      'Context ████░░░░░░░░ 34.2% of 200.0k │ 5h █░░░░░ 23.5% 2h13m │ 7d █░░░░░ 8% 5d0h',
+    )
+    await ui.unmount()
+  }
+})
+
+test('context, 5h and 7d each keep a hue of their own', async ($, on) => {
+  stubEnvironment(on)
+  const limits = [plan('five_hour', 23.5, minutesFromNow(133)), plan('seven_day', 50, minutesFromNow(600))]
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000, rateLimits: limits }) }))
+
+  const ui = await mountBand($)
+  const colorOf = async (text: RegExp) => (await ui.find({ type: 'Text', text }))?.props.color
+  const context = await colorOf(/^10\.0%$/)
+  const fiveHour = [await colorOf(/^5h $/), await colorOf(/^█░░░░░ $/), await colorOf(/^23\.5%$/)]
+  const sevenDay = [await colorOf(/^7d $/), await colorOf(/^███░░░ $/), await colorOf(/^50%$/)]
+  expect(context).toBe('success')
+  expect(fiveHour).toEqual(['ide', 'ide', 'ide'])
+  expect(sevenDay).toEqual(['autoAccept', 'autoAccept', 'autoAccept'])
+  await ui.unmount()
+})
+
+test('past the thresholds only the percentage turns; label and bar keep the window hue', async ($, on) => {
+  stubEnvironment(on)
+  const limits = [plan('five_hour', 65, minutesFromNow(60)), plan('seven_day', 90, minutesFromNow(600))]
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000, rateLimits: limits }) }))
+
+  const hot = await mountBand($)
+  expect((await hot.find({ type: 'Text', text: /^65%$/ }))?.props.color).toBe('warning')
+  expect((await hot.find({ type: 'Text', text: /^90%$/ }))?.props.color).toBe('error')
+  expect((await hot.find({ type: 'Text', text: /^5h $/ }))?.props.color).toBe('ide')
+  expect((await hot.find({ type: 'Text', text: /^█████░ $/ }))?.props.color).toBe('autoAccept')
+  await hot.unmount()
+})
+
+test('the band draws no arrow glyph that could overprint its neighbour', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000, rateLimits: SUBSCRIPTION }) }))
+
+  for (const bodyColumns of [160, 80, 50]) {
+    const ui = await mountBand($, { bodyColumns })
+    expect((await rowsOf(ui)).join('\n')).not.toMatch(/[\u2190-\u21FF\u27F0-\u27FF\u2B00-\u2BFF]/)
+    await ui.unmount()
+  }
+})
+
+test('a reading above zero fills at least one cell; zero fills none', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 0, tokens: 0, rateLimits: [plan('five_hour', 0), plan('seven_day', 1)] }),
+  }))
+
+  const ui = await mountBand($)
+  expect((await rowsOf(ui))[1]).toBe('Context ░░░░░░░░░░░░ 0.0% of 200.0k │ 5h ░░░░░░ 0% │ 7d █░░░░░ 1%')
+  await ui.unmount()
+})
+
+test('a window without a reset time draws no countdown', async ($, on) => {
+  stubEnvironment(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 10, tokens: 20_000, rateLimits: [plan('five_hour', 12), plan('seven_day', 3, minutesFromNow(90))] }),
+  }))
+
+  const ui = await mountBand($)
+  expect((await rowsOf(ui))[1]).toMatch(/5h [█░]+ 12% │ 7d [█░]+ 3% 1h30m$/)
+  await ui.unmount()
+})
+
+test('an API-key session shows the session cost; a gateway limit is appended', async ($, on) => {
+  stubEnvironment(on)
+  let limits: SessionRateLimit[] = []
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000, rateLimits: limits, cost: { usd: 1.5 } }) }))
+
+  const plain = await mountBand($)
+  expect((await rowsOf(plain))[1]).toMatch(/│ \$1\.50$/)
+  await plain.unmount()
+
+  limits = [plan('spend_limit', 42)]
+  const gated = await mountBand($)
+  expect((await rowsOf(gated))[1]).toMatch(/│ \$1\.50 │ limit [█░]+ 42%$/)
+  await gated.unmount()
+})
+
+// ---------------------------------------------------------------- width
+
+test('at eighty columns both rows fit whole, the bars shrinking first', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  stubSteps(on)
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, rateLimits: SUBSCRIPTION }),
+  }))
+  await runStep($, { effort: 'high' })
+
+  const ui = await mountBand($, { bodyColumns: 80 })
+  const [env, readings] = await rowsOf(ui)
+  expect(env!.length).toBeLessThanOrEqual(80)
+  expect(readings!.length).toBeLessThanOrEqual(80)
+  expect(readings).toContain('of 200.0k')
+  expect(readings).toContain('23.5% 2h13m')
+  expect(readings).toContain('8% 5d0h')
+  await ui.unmount()
+})
+
+test('a narrow terminal drops the window size and the bars but keeps every number', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, rateLimits: SUBSCRIPTION }),
+  }))
+
+  const ui = await mountBand($, { bodyColumns: 50 })
+  const [, readings] = await rowsOf(ui)
+  expect(readings!.length).toBeLessThanOrEqual(50)
+  expect(readings).toBe('Context 34.2% │ 5h 23.5% 2h13m │ 7d 8% 5d0h')
+  await ui.unmount()
+})
+
+// ---------------------------------------------------------------- readings
 
 test('with a breakdown the percent measures the compaction window', async ($, on) => {
   stubEnvironment(on)
-  const usage = usageOf({
-    percent: 34.2,
-    tokens: 68_400,
-    cost: { usd: 0.3 },
-    breakdown: breakdownOf(44.4, 160_000),
-  })
-  on('session.usage', () => ({ value: usage }))
+  on('session.usage', () => ({
+    value: usageOf({ percent: 34.2, tokens: 68_400, breakdown: breakdownOf(44.4, 160_000) }),
+  }))
 
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /44\.4%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 160\.0k/ })).toBeDefined()
-  expect(await ui.find({ text: /34\.2%/ })).toBeUndefined()
+  const ui = await mountBand($)
+  const [, readings] = await rowsOf(ui)
+  expect(readings).toContain('44.4% of 160.0k')
+  expect(readings).not.toContain('34.2%')
   await ui.unmount()
 })
 
 test('a session.measure redraws the band without a remount', async ($, on) => {
   stubEnvironment(on)
-  let usage = usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } })
+  let usage = usageOf({ percent: 10, tokens: 20_000 })
   on('session.usage', () => ({ value: usage }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
 
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
+  const ui = await mountBand($)
   expect(await ui.find({ text: /10\.0%/ })).toBeDefined()
 
-  usage = usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } })
-  await $.session.measure({
-    context: usage.context,
-    rateLimits: [],
-    changed: ['context'],
-  })
+  usage = usageOf({ percent: 50, tokens: 100_000 })
+  await $.session.measure({ context: usage.context, rateLimits: [], changed: ['context'] })
   expect(await ui.find({ text: /50\.0%/ })).toBeDefined()
   await ui.unmount()
 })
 
-test('errorThreshold moves the error colour', { options: { errorThreshold: 50 } }, async ($, on) => {
+test('the context gauge is green, then warning, then error', async ($, on) => {
   stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 10,
-      tokens: 20_000,
-      rateLimits: [plan('five_hour', 65)],
-    }),
-  }))
+  let percent = 30
+  on('session.usage', () => ({ value: usageOf({ percent, tokens: 1 }) }))
 
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect((await ui.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('error')
-  await ui.unmount()
+  for (const [p, color] of [[30, 'success'], [70, 'warning'], [90, 'error']] as const) {
+    percent = p
+    const ui = await mountBand($)
+    expect((await ui.find({ type: 'Text', text: new RegExp(`^${p}\\.0%$`) }))?.props.color).toBe(color)
+    await ui.unmount()
+  }
 })
 
-test('warningThreshold moves the warning colour', { options: { warningThreshold: 90 } }, async ($, on) => {
+test('the thresholds come from the options', { options: { warningThreshold: 20, errorThreshold: 50 } }, async ($, on) => {
   stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 10,
-      tokens: 20_000,
-      rateLimits: [plan('five_hour', 65)],
-    }),
-  }))
+  on('session.usage', () => ({ value: usageOf({ percent: 30, tokens: 1, rateLimits: [plan('five_hour', 55)] }) }))
 
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect((await ui.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('suggestion')
+  const ui = await mountBand($)
+  expect((await ui.find({ type: 'Text', text: /^30\.0%$/ }))?.props.color).toBe('warning')
+  expect((await ui.find({ type: 'Text', text: /55%$/ }))?.props.color).toBe('error')
   await ui.unmount()
 })
 
-test('showCost: false hides the session cost', { options: { showCost: false } }, async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 1.0 } }),
-  }))
+// ----------------------------------------------------------- agent views
 
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /\$/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('showResetIn: false hides the reset time', { options: { showResetIn: false } }, async ($, on) => {
-  stubEnvironment(on)
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [plan('five_hour', 23.5, minutesFromNow(133))],
-    }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /23\.5%/ })).toBeDefined()
-  expect(await ui.find({ text: /↺/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('a reading below 60% draws the context bar in the success colour', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 40, tokens: 80_000, cost: { usd: 0.1 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  const contextBar = await ui.find({ type: 'Text', text: /█/ })
-  expect(contextBar?.props.color).toBe('success')
-  await ui.unmount()
-})
-
-test('the Hide button hides the band until /context-band restores it expanded', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
-  }))
-  on('ui.render', { component: 'AbovePrompt' }, () => ({
-    type: 'Box',
-    children: ['the engine band'],
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /Context/ })).toBeDefined()
-
-  await ui.press({ key: 'hide' })
-  expect(await ui.find({ text: /Context/ })).toBeUndefined()
-  expect(await ui.find({ text: /the engine band/ })).toBeDefined()
-  await ui.unmount()
-
-  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await again.find({ text: /the engine band/ })).toBeDefined()
-
-  await $.command.run({
-    command: 'context-band',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: false, columns: 80 },
-  })
-  expect(await again.find({ text: /Context/ })).toBeDefined()
-  expect(await again.find({ text: /◂/ })).toBeUndefined()
-  await again.unmount()
-})
-
-test('the compact button compacts on the second press alone', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  let compacts = 0
-  on('session.compact', () => {
-    compacts += 1
-    return { skip: 'test' }
-  })
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeDefined()
-  expect(compacts).toBe(0)
-
-  await ui.press({ key: 'compact' })
-  expect(compacts).toBe(0)
-  expect((await ui.find({ type: 'Button', text: /Confirm/ }))?.props.label).toBe('Confirm')
-  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeUndefined()
-
-  await ui.press({ key: 'compact' })
-  expect(compacts).toBe(1)
-  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('the confirm reverts to the idle form when the timeout passes', async ($, on) => {
-  stubEnvironment(on)
-  const clock = mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  let compacts = 0
-  on('session.compact', () => {
-    compacts += 1
-    return { skip: 'test' }
-  })
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'compact' })
-  expect((await ui.find({ type: 'Button', text: /Confirm/ }))?.props.label).toBe('Confirm')
-
-  await clock.advance(4_000)
-  expect((await ui.find({ type: 'Button', text: /Confirm/ }))?.props.label).toBe('Confirm')
-
-  await clock.advance(2_000)
-  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeDefined()
-  expect(compacts).toBe(0)
-  await ui.unmount()
-})
-
-test('an agent view draws no compact button', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  let compacts = 0
-  on('session.compact', () => {
-    compacts += 1
-    return { skip: 'test' }
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ type: 'Button', text: /Compact/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', text: /Confirm/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Button', text: /Hide/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /▾/ })).toBeDefined()
-  await ui.press({ key: 'compact' }).catch(() => undefined)
-  expect(compacts).toBe(0)
-  await ui.unmount()
-})
-
-test('a compact pressed during a running turn waits for the turn to end', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  let compacts = 0
-  on('session.compact', () => {
-    compacts += 1
-    return { skip: 'test' }
-  })
-  on('turn.complete', () => ({ text: '' }))
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, isWorking: true },
-  })
-  await ui.press({ key: 'compact' })
-  await ui.press({ key: 'compact' })
-  expect(compacts).toBe(0)
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-
-  await $.turn.complete({
-    answer: '',
-    durationMs: 1_000,
-    isAborted: false,
-    turnId: 't1',
-    reason: 'answer',
-  })
-  expect(compacts).toBe(1)
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the band yields when a survey holds it', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
-  }))
-  on('ui.render', { component: 'AbovePrompt' }, () => ({
-    type: 'Box',
-    children: ['the engine band'],
-  }))
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, hasSurvey: true },
-  })
-  expect(await ui.find({ text: /Context/ })).toBeUndefined()
-  expect(await ui.find({ text: /the engine band/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('an agent view shows the viewed loop fill from its completed steps', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', status: 'running' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ text: /16\.0%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
-  expect(await ui.find({ text: /10\.0%/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('an agent view redraws as further steps complete without a remount', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', status: 'running' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    const input = e.index === 0 ? 10_000 : 30_000
-    return {
-      ...turnStepResultOf(e.model, { input, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ text: /16\.0%/ })).toBeUndefined()
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-  expect(await ui.find({ text: /16\.0%/ })).toBeDefined()
-
-  await runStep($, { turnId: 't1', index: 1, model: 'Opus 4.6', messageCount: 5, agentId: 'a1' })
-  expect(await ui.find({ text: /26\.0%/ })).toBeDefined()
-  expect(await ui.find({ text: /16\.0%/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('an agent view labels the loop by name, then type, then short id', async ($, on) => {
+test('an agent view shows the viewed loop: label, model, effort and fill', async ($, on) => {
   stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
+    agentOf({ id: 'a1', type: 'Explore', name: 'scout', status: 'running' }),
+  ])
+  stubSteps(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000, rateLimits: SUBSCRIPTION }) }))
+
+  await runStep($, { model: 'claude-haiku-5-5', effort: 'low', agentId: 'a1' })
+  const ui = await mountBand($, { view: { agentId: 'a1' } })
+  const [env, readings] = await rowsOf(ui)
+  expect(env).toMatch(/^scout claude-haiku-5-5 · low ● /)
+  expect(readings).toContain('16.0% of 200.0k')
+  expect(readings).toContain('5h ')
+  expect(readings).toContain('23.5% 2h13m')
+  expect(readings).not.toContain('10.0%')
+  await ui.unmount()
+})
+
+test('an agent view redraws as its loop takes further steps', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
+  stubSteps(on, e => (e.index === 0 ? 32_000 : 64_000))
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
+
+  await runStep($, { agentId: 'a1' })
+  const ui = await mountBand($, { view: { agentId: 'a1' } })
+  expect(await ui.find({ text: /16\.0%/ })).toBeDefined()
+  await runStep($, { agentId: 'a1', index: 1 })
+  expect(await ui.find({ text: /32\.0%/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('an agent is labelled by name, then type, then short id', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/x', [
     agentOf({ id: 'a1', type: 'Explore', name: 'scout' }),
-    agentOf({ id: 'a2', type: 'Explore' }),
+    agentOf({ id: 'a2', type: 'Plan' }),
+    agentOf({ id: 'abcdef0123456789', type: '' }),
   ])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
 
-  const mountView = async (agentId: string) =>
-    $.ui.mount({
-      plugin: 'context-band',
-      surface: 'terminal' as const,
-      ...BAND,
-      props: { ...BAND.props, view: { agentId } },
-    })
-
-  const named = await mountView('a1')
-  expect(await named.find({ text: /scout/ })).toBeDefined()
-  expect(await named.find({ text: /Explore/ })).toBeUndefined()
-  await named.unmount()
-
-  const typed = await mountView('a2')
-  expect(await typed.find({ text: /Explore/ })).toBeDefined()
-  await typed.unmount()
-
-  const unknown = await mountView('0f3ea2c911aa')
-  expect(await unknown.find({ text: /0f3ea2c9/ })).toBeDefined()
-  await unknown.unmount()
-
-  const main = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await main.find({ text: /scout/ })).toBeUndefined()
-  expect(await main.find({ text: /Explore/ })).toBeUndefined()
-  await main.unmount()
+  for (const [id, label] of [['a1', 'scout'], ['a2', 'Plan'], ['abcdef0123456789', 'abcdef01']] as const) {
+    const ui = await mountBand($, { view: { agentId: id } })
+    expect((await rowsOf(ui))[0]).toMatch(new RegExp(`^${label} `))
+    await ui.unmount()
+  }
 })
 
-test('a listed loop with neither name nor type falls back to the short id', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
-    agentOf({ id: '0f3ea2c911aa', type: '' }),
-  ])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
+test('an agent with no completed step shows a dim placeholder and no model', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/x', [agentOf({ id: 'a1', type: 'Explore' })])
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
 
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: '0f3ea2c911aa' } },
-  })
-  expect(await ui.find({ text: /0f3ea2c9/ })).toBeDefined()
+  const ui = await mountBand($, { view: { agentId: 'a1' } })
+  const [env] = await rowsOf(ui)
+  expect(env).not.toContain('Opus 4.6')
+  expect((await ui.find({ type: 'Text', text: /^0\.0%$/ }))?.props.color).toBe('inactive')
   await ui.unmount()
 })
 
-test('an agent with no completed step shows the inactive placeholder', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
+test('a loop on a 1M model is measured against the 1M window', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/x', [agentOf({ id: 'a1', type: 'Explore' })])
+  stubSteps(on, () => 300_000)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
 
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  const reading = await ui.find({ type: 'Text', text: /0\.0%/ })
-  expect(reading).toBeDefined()
-  expect(reading?.props.color).toBe('inactive')
-  expect(reading?.props.bold).toBeFalsy()
-  expect(await ui.find({ type: 'Text', text: /█/ })).toBeUndefined()
-  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
+  await runStep($, { model: 'claude-sonnet-5-5[1m]', agentId: 'a1' })
+  const ui = await mountBand($, { view: { agentId: 'a1' } })
+  expect((await rowsOf(ui))[1]).toContain('30.0% of 1.0m')
   await ui.unmount()
 })
 
-test('a loop on another model is measured against the window table', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
-    agentOf({ id: 'a1', type: 'Explore' }),
-    agentOf({ id: 'a2', type: 'Explore' }),
-  ])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    const tokens = e.model.includes('[1m]')
-      ? { input: 300_000, cacheRead: 0, cacheCreation: 0 }
-      : { input: 100_000, cacheRead: 0, cacheCreation: 0 }
-    return {
-      ...turnStepResultOf(e.model, tokens),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
+test('the main view is untouched by agent steps', async ($, on) => {
+  stubEnvironment(on, 'Opus 4.6', '/x', [agentOf({ id: 'a1', type: 'Explore' })])
+  stubSteps(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
 
-  await runStep($, { turnId: 't1', index: 0, model: 'glm-5.3-flash[1m]', messageCount: 3, agentId: 'a1' })
-  const oneM = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await oneM.find({ text: /30\.0%/ })).toBeDefined()
-  expect(await oneM.find({ text: /of 1\.0m/ })).toBeDefined()
-  await oneM.unmount()
-
-  await runStep($, { turnId: 't1', index: 0, model: 'claude-haiku-4-5', messageCount: 3, agentId: 'a2' })
-  const plain = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a2' } },
-  })
-  expect(await plain.find({ text: /50\.0%/ })).toBeDefined()
-  expect(await plain.find({ text: /of 200\.0k/ })).toBeDefined()
-  await plain.unmount()
-})
-
-test('a loop on the session model is measured against the engine-reported window', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, window: 160_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 80_000, cacheRead: 0, cacheCreation: 0 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ text: /50\.0%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 160\.0k/ })).toBeDefined()
+  await runStep($, { model: 'claude-haiku-5-5', effort: 'low', agentId: 'a1' })
+  const ui = await mountBand($)
+  const [env, readings] = await rowsOf(ui)
+  expect(env).toMatch(/^Opus 4\.6 ○ /)
+  expect(readings).toContain('10.0%')
   await ui.unmount()
-})
-
-test('an agent view keeps the plan quota bars and the reset countdown', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [
-        plan('five_hour', 23.5, minutesFromNow(133)),
-        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
-      ],
-      cost: { usd: 0.42 },
-    }),
-  }))
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect((await ui.find({ type: 'Text', text: /23\.5%/ }))?.props.color).toBe('suggestion')
-  expect((await ui.find({ type: 'Text', text: /8%/ }))?.props.color).toBe('remember')
-  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
-  expect(await ui.find({ text: /\$/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('an agent view keeps the session cost', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 1.234 } }),
-  }))
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ text: /\$1\.23/ })).toBeDefined()
-  expect(await ui.find({ text: /↺/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('the main conversation readings are untouched by tracked agent steps', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const main = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await main.find({ text: /10\.0%/ })).toBeDefined()
-  expect(await main.find({ text: /16\.0%/ })).toBeUndefined()
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-  expect(await main.find({ text: /10\.0%/ })).toBeDefined()
-  expect(await main.find({ text: /16\.0%/ })).toBeUndefined()
-  await main.unmount()
-
-  const agent = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await agent.find({ text: /16\.0%/ })).toBeDefined()
-  await agent.unmount()
 })
 
 test('a loop the engine no longer lists is pruned but keeps its last-known name', async ($, on) => {
   const roster = [agentOf({ id: 'a1', type: 'Explore', name: 'scout' })]
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', roster)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
+  stubEnvironment(on, 'Opus 4.6', '/x', roster)
+  stubSteps(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 10, tokens: 20_000 }) }))
 
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-  const live = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await live.find({ text: /scout/ })).toBeDefined()
-  expect(await live.find({ text: /16\.0%/ })).toBeDefined()
-  await live.unmount()
-
+  await runStep($, { agentId: 'a1' })
   roster.splice(0, roster.length)
-  await runStep($, { turnId: 't2', index: 0, model: 'Opus 4.6', messageCount: 8 })
-
-  const ended = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ended.find({ text: /scout/ })).toBeDefined()
-  expect(await ended.find({ text: /16\.0%/ })).toBeUndefined()
-  await ended.unmount()
-})
-
-test('tracked figures survive a remount of the band', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-
-  const first = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await first.find({ text: /16\.0%/ })).toBeDefined()
-  await first.unmount()
-
-  const second = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await second.find({ text: /16\.0%/ })).toBeDefined()
-  await second.unmount()
-})
-
-test('the working dot follows the viewed loop status in an agent view', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
-    agentOf({ id: 'a1', type: 'Explore', status: 'running' }),
-    agentOf({ id: 'a2', type: 'Explore', status: 'idle' }),
-  ])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const mountView = async (agentId: string) =>
-    $.ui.mount({
-      plugin: 'context-band',
-      surface: 'terminal' as const,
-      ...BAND,
-      props: { ...BAND.props, view: { agentId } },
-    })
-
-  const running = await mountView('a1')
-  expect(await running.find({ text: /●/ })).toBeDefined()
-  expect(await running.find({ text: /○/ })).toBeUndefined()
-  await running.unmount()
-
-  const idle = await mountView('a2')
-  expect(await idle.find({ text: /○/ })).toBeDefined()
-  expect(await idle.find({ text: /●/ })).toBeUndefined()
-  await idle.unmount()
-})
-
-test('the scale follows the latest main-loop step and drops when it carries none', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'low' })
-  expect(await ui.find({ type: 'Text', text: /^█░░░░ ?$/ })).toBeDefined()
-
-  await runStep($, { turnId: 't1', index: 1, model: 'Opus 4.6', messageCount: 5, effort: 'max' })
-  expect(await ui.find({ type: 'Text', text: /^█████ ?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^█░░░░ ?$/ })).toBeUndefined()
-
-  await runStep($, { turnId: 't1', index: 2, model: 'Opus 4.6', messageCount: 7 })
-  expect(await ui.find({ type: 'Text', text: /^█████ ?$/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('with no step yet recorded the model shows without a scale', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('an effort without a named level draws no scale', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 4 })
-  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('an agent view shows the loop model and effort from its latest step', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
-    agentOf({ id: 'a1', type: 'Explore', status: 'running' }),
-  ])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, {
-    turnId: 't1',
-    index: 0,
-    model: 'glm-5.3-flash[1m]',
-    messageCount: 3,
-    effort: 'xhigh',
-    agentId: 'a1',
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeDefined()
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('an agent view with no completed step shows neither model nor scale', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('the main view draws no scale from an agent step', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await runStep($, {
-    turnId: 't1',
-    index: 0,
-    model: 'glm-5.3-flash[1m]',
-    messageCount: 3,
-    effort: 'max',
-    agentId: 'a1',
-  })
-  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the path yields room for the scale before the readings do', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.42 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, bodyColumns: 40 },
-  })
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'medium' })
-  expect(await ui.find({ type: 'Text', text: /^██░░░ ?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /client-portal/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /work\// })).toBeUndefined()
-  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('a main-loop step puts the effort scale beside the model', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeUndefined()
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
-  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the collapse button draws the pill and pressing it expands again', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      cost: { usd: 0.2 },
-      breakdown: breakdownOf(44.4, 160_000),
-    }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'collapse' })
-  expect((await ui.find({ type: 'Button', text: /◂/ }))?.props.label).toBe('◂ 44.4%')
-  expect(await ui.find({ text: /Context/ })).toBeUndefined()
-
-  await ui.press({ key: 'pill' })
-  expect(await ui.find({ text: /44\.4%/ })).toBeDefined()
-  expect(await ui.find({ text: /◂/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('the pill names the viewed agent in an agent view', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', name: 'scout' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  await ui.press({ key: 'collapse' })
-  expect((await ui.find({ type: 'Button', text: /◂/ }))?.props.label).toBe('◂ scout 16.0%')
-  await ui.unmount()
-})
-
-test('a long name caps the pill label at twelve characters', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
-    agentOf({ id: 'a1', type: 'Explore', name: 'general-purpose' }),
-  ])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, agentId: 'a1' })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  await ui.press({ key: 'collapse' })
-  expect((await ui.find({ type: 'Button', text: /◂/ }))?.props.label).toBe('◂ general-purp 16.0%')
-  await ui.unmount()
-})
-
-test('an agent view with no completed step shows a dim zero pill', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  await ui.press({ key: 'collapse' })
-  const pill = await ui.find({ type: 'Button', text: /◂/ })
-  expect(pill?.props.label).toBe('◂ Explore 0.0%')
-  expect(pill?.props.dimColor).toBe(true)
-  await ui.unmount()
-})
-
-test('the collapsed pill yields when a survey holds it', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
-  }))
-  on('ui.render', { component: 'AbovePrompt' }, () => ({
-    type: 'Box',
-    children: ['the engine band'],
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'collapse' })
-  expect(await ui.find({ text: /◂/ })).toBeDefined()
-  await ui.unmount()
-
-  const surveyed = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, hasSurvey: true },
-  })
-  expect(await surveyed.find({ text: /the engine band/ })).toBeDefined()
-  expect(await surveyed.find({ text: /◂/ })).toBeUndefined()
-  await surveyed.unmount()
-})
-
-test('the collapsed pill persists across a remount and /context-band restores it expanded', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 50, tokens: 100_000, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'collapse' })
-  expect(await ui.find({ text: /◂/ })).toBeDefined()
-  await ui.unmount()
-
-  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await again.find({ text: /◂/ })).toBeDefined()
-  expect(await again.find({ text: /Context/ })).toBeUndefined()
-
-  await $.command.run({
-    command: 'context-band',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: false, columns: 80 },
-  })
-  expect(await again.find({ text: /50\.0%/ })).toBeDefined()
-  expect(await again.find({ text: /◂/ })).toBeUndefined()
-  await again.unmount()
-})
-
-
-test('the settings toggle swaps the readings row for the settings rows', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ type: 'Button', text: /⚙/ })).toBeDefined()
-
-  await ui.press({ key: 'settings' })
-  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
-  expect(await ui.find({ text: /Error 85/ })).toBeDefined()
-  expect(await ui.find({ text: /Refresh 7s/ })).toBeDefined()
-  expect(await ui.find({ text: /Context/ })).toBeUndefined()
-  expect(await ui.find({ text: /34\.2%/ })).toBeUndefined()
-
-  await ui.press({ key: 'done' })
-  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
-  expect(await ui.find({ text: /Warn 60/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('a second settings press restores the readings row too', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
-
-  await ui.press({ key: 'settings' })
-  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
-  expect(await ui.find({ text: /Warn 60/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('raising warning steps by five and lifts error out of the way', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  for (let i = 0; i < 8; i++) await ui.press({ key: 'warn+' })
-  expect(await ui.find({ text: /Warn 95/ })).toBeDefined()
-  expect(await ui.find({ text: /Error 100/ })).toBeDefined()
-  expect(await ui.find({ text: /Warn 100/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('lowering error steps by five and drops warning with it', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  for (let i = 0; i < 4; i++) await ui.press({ key: 'error-' })
-  expect(await ui.find({ text: /Error 65/ })).toBeDefined()
-  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
-  await ui.press({ key: 'error-' })
-  expect(await ui.find({ text: /Warn 55/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the refresh stepper steps by one and clamps at one', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  await ui.press({ key: 'seconds+' })
-  await ui.press({ key: 'seconds+' })
-  await ui.press({ key: 'seconds+' })
-  expect(await ui.find({ text: /Refresh 10s/ })).toBeDefined()
-
-  for (let i = 0; i < 12; i++) await ui.press({ key: 'seconds-' })
-  expect(await ui.find({ text: /Refresh 1s/ })).toBeDefined()
-  await ui.press({ key: 'seconds-' })
-  expect(await ui.find({ text: /Refresh 1s/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the refresh stepper clamps at six hundred', { options: { refreshSeconds: 599 } }, async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  expect(await ui.find({ text: /Refresh 599s/ })).toBeDefined()
-  await ui.press({ key: 'seconds+' })
-  expect(await ui.find({ text: /Refresh 600s/ })).toBeDefined()
-  await ui.press({ key: 'seconds+' })
-  expect(await ui.find({ text: /Refresh 600s/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('a stored threshold shadows the option and persists across a remount', { options: { errorThreshold: 50 } }, async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 10,
-      tokens: 20_000,
-      rateLimits: [plan('five_hour', 65)],
-    }),
-  }))
-
-  const first = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect((await first.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('error')
-  await first.press({ key: 'settings' })
-  for (let i = 0; i < 5; i++) await first.press({ key: 'error+' })
-  expect(await first.find({ text: /Error 75/ })).toBeDefined()
-  await first.press({ key: 'done' })
-  expect((await first.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('warning')
-  await first.unmount()
-
-  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect((await again.find({ type: 'Text', text: /65%/ }))?.props.color).toBe('warning')
-  await again.unmount()
-})
-
-test('the command restores the band but leaves the settings values alone', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  await ui.press({ key: 'warn+' })
-  expect(await ui.find({ text: /Warn 65/ })).toBeDefined()
-
-  await $.command.run({
-    command: 'context-band',
-    args: '',
-    origin: { kind: 'composer' },
-    presentation: { isFullscreen: false, columns: 80 },
-  })
-  expect(await ui.find({ text: /Warn 65/ })).toBeDefined()
-  expect(await ui.find({ type: 'Button', text: /⚙/ })).toBeDefined()
-  await ui.press({ key: 'done' })
-  await ui.unmount()
-
-  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await again.press({ key: 'settings' })
-  expect(await again.find({ text: /Warn 65/ })).toBeDefined()
-  await again.unmount()
-})
-
-test('the settings toggles show their state and flip on press', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  expect((await ui.find({ type: 'Button', text: /Model & effort/ }))?.props.label).toBe('Model & effort on')
-  expect((await ui.find({ type: 'Button', text: /Reset ↺/ }))?.props.label).toBe('Reset ↺ on')
-  expect((await ui.find({ type: 'Button', text: /Cost/ }))?.props.label).toBe('Cost on')
-
-  await ui.press({ key: 'effort' })
-  expect((await ui.find({ type: 'Button', text: /Model & effort/ }))?.props.label).toBe('Model & effort off')
-  await ui.press({ key: 'reset' })
-  expect((await ui.find({ type: 'Button', text: /Reset ↺/ }))?.props.label).toBe('Reset ↺ off')
-  await ui.press({ key: 'cost' })
-  expect((await ui.find({ type: 'Button', text: /Cost/ }))?.props.label).toBe('Cost off')
-  await ui.unmount()
-})
-
-test('the cost toggle hides the session cost and persists', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 1.234 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /\$1\.23/ })).toBeDefined()
-  await ui.press({ key: 'settings' })
-  await ui.press({ key: 'cost' })
-  await ui.press({ key: 'done' })
-  expect(await ui.find({ text: /\$1\.23/ })).toBeUndefined()
-  await ui.unmount()
-
-  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await again.find({ text: /\$1\.23/ })).toBeUndefined()
-  await again.unmount()
-})
-
-test('the reset toggle hides the reset countdown and persists', async ($, on) => {
-  stubEnvironment(on)
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [plan('five_hour', 23.5, minutesFromNow(133))],
-    }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
-  await ui.press({ key: 'settings' })
-  await ui.press({ key: 'reset' })
-  await ui.press({ key: 'done' })
-  expect(await ui.find({ text: /↺2h13m/ })).toBeUndefined()
-  expect(await ui.find({ text: /23\.5%/ })).toBeDefined()
-  await ui.unmount()
-
-  const again = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  expect(await again.find({ text: /↺2h13m/ })).toBeUndefined()
-  await again.unmount()
-})
-
-test('the effort toggle gates the model and scale and re-credits the path', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.42 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, bodyColumns: 66 },
-  })
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
-  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /work\/client-portal/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })).toBeUndefined()
-
-  await ui.press({ key: 'settings' })
-  await ui.press({ key: 'effort' })
-  expect(await ui.find({ type: 'Text', text: /^█{1,5}░{0,4} ?$/ })).toBeUndefined()
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /\/home\/jh\/work\/client-portal/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the effort toggle gates the tracked model and scale in an agent view too', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', status: 'running' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, {
-    turnId: 't1',
-    index: 0,
-    model: 'glm-5.3-flash[1m]',
-    messageCount: 3,
-    effort: 'xhigh',
-    agentId: 'a1',
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeDefined()
-
-  await ui.press({ key: 'settings' })
-  await ui.press({ key: 'effort' })
-  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeUndefined()
-  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeUndefined()
-  await ui.press({ key: 'done' })
-  expect(await ui.find({ text: /3\.2%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 1\.0m/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('the collapsed pill ignores the settings area', async ($, on) => {
-  stubEnvironment(on)
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
-
-  await ui.press({ key: 'collapse' })
-  expect(await ui.find({ text: /◂/ })).toBeDefined()
-  expect(await ui.find({ text: /Warn 60/ })).toBeUndefined()
-
-  await ui.press({ key: 'pill' })
-  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
-  expect(await ui.find({ text: /◂/ })).toBeUndefined()
-  await ui.unmount()
-})
-
-test('the main conversation working flag rules the dot in the main view alone', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [agentOf({ id: 'a1', type: 'Explore', status: 'running' })])
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-
-  const main = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, isWorking: false },
-  })
-  expect(await main.find({ text: /○/ })).toBeDefined()
-  expect(await main.find({ text: /●/ })).toBeUndefined()
-  await main.unmount()
-})
-
-type DrawnElement = {
-  type?: string
-  key?: unknown
-  props?: Record<string, unknown>
-  children?: unknown
-}
-
-function buttonKeysIn(node: unknown): string[] {
-  const keys: string[] = []
-  const walk = (n: unknown) => {
-    if (Array.isArray(n)) return n.forEach(walk)
-    if (!n || typeof n !== 'object') return
-    const el = n as DrawnElement
-    if (el.type === 'Button') {
-      const key = el.key ?? el.props?.key
-      if (typeof key === 'string') keys.push(key)
-    }
-    walk(el.children)
-  }
-  walk(node)
-  return keys
-}
-
-function rowBoxesOf(column: DrawnElement | undefined): DrawnElement[] {
-  return ((column?.children ?? []) as unknown[]).filter(
-    child => (child as DrawnElement)?.type === 'Box',
-  ) as DrawnElement[]
-}
-
-function drawnWidthOf(value: unknown): number {
-  if (typeof value === 'string') return value.length
-  if (Array.isArray(value)) return value.reduce((sum, child) => sum + drawnWidthOf(child), 0)
-  if (!value || typeof value !== 'object') return 0
-  const el = value as DrawnElement
-  if (el.type === 'Button') {
-    return typeof el.props?.label === 'string' ? el.props.label.length : 0
-  }
-  return drawnWidthOf(el.children)
-}
-
-test('a long identity label costs the path room before the rows overflow eighty columns', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal-v3-frontend-builds', [
-    agentOf({ id: 'a1', type: 'Explore', name: 'general-purpose', status: 'running' }),
-  ])
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({ percent: 10, tokens: 20_000, cost: { usd: 0.1 } }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high', agentId: 'a1' })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-
-  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
-  expect(drawnWidthOf(env)).toBeLessThanOrEqual(80)
-  expect(drawnWidthOf(readings)).toBeLessThanOrEqual(80)
-  expect(buttonKeysIn(env)).toEqual(['hide', 'settings', 'collapse'])
-  expect(buttonKeysIn(readings)).toEqual([])
-  expect(await ui.find({ text: /general-purpose/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^client-portal-v3-frontend-builds$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /work\// })).toBeUndefined()
-  expect(await ui.find({ text: /16\.0%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('at eighty columns the main view holds both rows whole with the buttons on the environment row', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [
-        plan('five_hour', 23.5, minutesFromNow(133)),
-        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
-      ],
-      cost: { usd: 0.42 },
-    }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
-
-  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
-  expect(buttonKeysIn(env)).toEqual(['hide', 'compact', 'settings', 'collapse'])
-  expect(buttonKeysIn(readings)).toEqual([])
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^\/home\/jh\/work\/client-portal$/ })).toBeDefined()
-  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /8%/ })).toBeDefined()
-  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('at eighty columns an agent view holds both rows whole with the buttons on the environment row', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods', [
-    agentOf({ id: 'a1', type: 'Explore', name: 'scout', status: 'running' }),
-  ])
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 10,
-      tokens: 20_000,
-      rateLimits: [plan('five_hour', 23.5, minutesFromNow(133))],
-      cost: { usd: 0.42 },
-    }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-  await runStep($, {
-    turnId: 't1',
-    index: 0,
-    model: 'glm-5.3-flash[1m]',
-    messageCount: 3,
-    effort: 'xhigh',
-    agentId: 'a1',
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, view: { agentId: 'a1' } },
-  })
-
-  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
-  expect(buttonKeysIn(env)).toEqual(['hide', 'settings', 'collapse'])
-  expect(buttonKeysIn(readings)).toEqual([])
-  expect(await ui.find({ text: /scout/ })).toBeDefined()
-  expect(await ui.find({ text: /glm-5\.3-flash\[1m\]/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^████░ ?$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^\/root\/project\/claude-mods$/ })).toBeDefined()
-  expect(await ui.find({ text: /3\.2%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 1\.0m/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
-  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('at eighty columns the settings area holds whole with the buttons on the environment row', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/root/project/claude-mods')
-  on('session.usage', () => ({
-    value: usageOf({ percent: 34.2, tokens: 68_400, cost: { usd: 0.2 } }),
-  }))
-
-  const ui = await $.ui.mount({ plugin: 'context-band', surface: 'terminal', ...BAND })
-  await ui.press({ key: 'settings' })
-
-  const [env, numeric, toggles] = rowBoxesOf(await ui.find({ type: 'Box' }))
-  expect(buttonKeysIn(env)).toEqual(['hide', 'compact', 'settings', 'collapse'])
-  expect(buttonKeysIn(numeric)).toEqual(['warn-', 'warn+', 'error-', 'error+', 'seconds-', 'seconds+'])
-  expect(buttonKeysIn(toggles)).toEqual(['effort', 'reset', 'cost', 'done'])
-  expect(await ui.find({ text: /Warn 60/ })).toBeDefined()
-  expect(await ui.find({ text: /Error 85/ })).toBeDefined()
-  expect(await ui.find({ text: /Refresh 7s/ })).toBeDefined()
-  expect(await ui.find({ text: /Model & effort on/ })).toBeDefined()
-  expect(await ui.find({ text: /\/root\/project\/claude-mods/ })).toBeDefined()
-  await ui.unmount()
-})
-
-test('a narrower terminal shortens the path before the readings and the buttons give way', async ($, on) => {
-  stubEnvironment(on, 'Opus 4.6', '/home/jh/work/client-portal')
-  mock.clock(on, { now: FIXED_NOW })
-  on('session.usage', () => ({
-    value: usageOf({
-      percent: 34.2,
-      tokens: 68_400,
-      rateLimits: [
-        plan('five_hour', 23.5, minutesFromNow(133)),
-        plan('seven_day', 8, minutesFromNow(5 * 24 * 60)),
-      ],
-      cost: { usd: 0.42 },
-    }),
-  }))
-  on('turn.step', async function* ($, e) {
-    return {
-      ...turnStepResultOf(e.model, { input: 10_000, cacheRead: 20_000, cacheCreation: 2_000 }),
-      turnId: e.turnId,
-      index: e.index,
-    }
-  })
-
-  const ui = await $.ui.mount({
-    plugin: 'context-band',
-    surface: 'terminal',
-    ...BAND,
-    props: { ...BAND.props, bodyColumns: 70 },
-  })
-  await runStep($, { turnId: 't1', index: 0, model: 'Opus 4.6', messageCount: 3, effort: 'high' })
-
-  const [env, readings] = rowBoxesOf(await ui.find({ type: 'Box' }))
-  expect(buttonKeysIn(env)).toEqual(['hide', 'compact', 'settings', 'collapse'])
-  expect(buttonKeysIn(readings)).toEqual([])
-  expect(await ui.find({ type: 'Text', text: /^work\/client-portal$/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /\/home\/jh\/work/ })).toBeUndefined()
-  expect(await ui.find({ text: /Opus 4\.6/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /^███░░ ?$/ })).toBeDefined()
-  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
-  expect(await ui.find({ text: /of 200\.0k/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /23\.5%/ })).toBeDefined()
-  expect(await ui.find({ type: 'Text', text: /8%/ })).toBeDefined()
-  expect(await ui.find({ text: /↺2h13m/ })).toBeDefined()
+  await runStep($, { index: 1 })
+
+  const ui = await mountBand($, { view: { agentId: 'a1' } })
+  expect((await rowsOf(ui))[0]).toMatch(/^scout /)
+  expect(await ui.find({ text: /16\.0%/ })).toBeUndefined()
   await ui.unmount()
 })
