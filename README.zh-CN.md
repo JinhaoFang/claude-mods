@@ -6,17 +6,35 @@
 
 mod 是一种 Claude Code 插件：它的 JavaScript / TypeScript 代码注册处理函数，Claude Code 在事件发生时调用它们。见[官方 mods 文档](https://code.claude.com/docs/en/plugins/mods/overview)。
 
-![context-band 预览](mods/context-band/assets/forms.png)
-
 下表列出本 marketplace 的全部 mod，每条都可从这里安装。
 
 | mod | 说明 | 安装 |
 | --- | --- | --- |
-| [context-band](mods/context-band/README.zh-CN.md) | 输入框上方的实时带：上下文占用 + 套餐额度 / 会话花费（自适应登录方式） | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
+| [context-band](mods/context-band/README.zh-CN.md) | 输入框上方的只读信息带：模型与思考强度、上下文占用，以及颜色各异、各带重置时间的 5h / 7d 套餐额度，或会话花费 | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
 | [block-destructive-commands](mods/block-destructive-commands/README.md) | 在执行前拦截破坏性 Bash 命令（对根目录递归 rm、强推、hard reset、破坏性 SQL、格式化磁盘） | `/plugin install block-destructive-commands --marketplace JinhaoFang/claude-mods` |
 | [agent-flow](mods/agent-flow/README.md) | 输入框旁实时展示会话的子代理与队友树；无法绘制面板时以文本打印 | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
 | [image-view](mods/image-view/README.md) | 在输入框上方显示粘贴图片的缩略图，而不是光秃秃的 `[Image #1]` 标签 | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
-| [redact](mods/redact/README.zh-CN.md) | 在敏感数据进入模型上下文之前改写为占位符（邮箱、IP、凭证、地址） | `/plugin install redact --marketplace JinhaoFang/claude-mods` |
+| [redact](mods/redact/README.zh-CN.md) | 在敏感数据进入模型上下文之前改写为占位符（邮箱、IP、凭证、地址、电话）；准确优先，不误伤 DOI、哈希和版本号 | `/plugin install redact --marketplace JinhaoFang/claude-mods` |
+
+## 预览
+
+有可视化界面的 mod 在这里附图；只处理事件、没有界面的 mod（block-destructive-commands、redact）不放图。
+
+### context-band
+
+信息带的四种状态，由 mod 自身的输出绘制：
+
+![context-band：输入框上方信息带的四种状态](mods/context-band/assets/band.png)
+
+### agent-flow
+
+一个有四个子代理的会话在面板中的各行，由 mod 自身的输出绘制：
+
+![agent-flow：子代理树，含状态、工具与 token](docs/assets/agent-flow.png)
+
+### image-view
+
+![image-view：输入框上方粘贴图片的缩略图](mods/image-view/claude-image-view.png)
 
 ## 安装
 

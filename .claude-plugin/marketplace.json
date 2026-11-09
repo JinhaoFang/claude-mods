@@ -6,7 +6,7 @@
     {
       "name": "context-band",
       "source": "./mods/context-band",
-      "description": "A live band above the prompt showing the session's context usage, plan quota or cost.",
+      "description": "A read-only band above the prompt showing the model and effort, context usage, and labelled plan quota or session cost.",
       "category": "monitoring",
       "tags": ["context", "usage", "quota", "cost", "band"],
       "author": { "name": "JinhaoFang" },
@@ -42,7 +42,7 @@
     {
       "name": "redact",
       "source": "./mods/redact",
-      "description": "Rewrites sensitive data (emails, IPs, credentials, addresses) into placeholders before it enters the model context.",
+      "description": "Rewrites sensitive data (emails, IPs, credentials, addresses, phone numbers) into placeholders before it enters the model context, with precision-first rules.",
       "category": "security",
       "tags": ["security", "redaction", "privacy", "secrets", "hooks"],
       "author": { "name": "JinhaoFang" },
