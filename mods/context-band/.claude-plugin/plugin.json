@@ -1,7 +1,7 @@
 {
   "name": "context-band",
-  "version": "0.3.0",
-  "description": "A band above the prompt showing the session's context usage, plan quota or cost",
+  "version": "0.4.0",
+  "description": "A band above the prompt showing the session's model and effort, context usage, and plan quota or cost",
   "author": { "name": "JinhaoFang" },
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -22,24 +22,6 @@
       "title": "Fallback refresh (s)",
       "default": 7,
       "description": "Fallback redraw interval in seconds; turn ends update it at once"
-    },
-    "showEffort": {
-      "type": "boolean",
-      "title": "Show model & effort",
-      "default": true,
-      "description": "Show the model name and its effort scale on the band"
-    },
-    "showCost": {
-      "type": "boolean",
-      "title": "Show session cost",
-      "default": true,
-      "description": "Show the session cost when no plan quota is reported"
-    },
-    "showResetIn": {
-      "type": "boolean",
-      "title": "Show plan reset time",
-      "default": true,
-      "description": "Show when the nearest plan window resets"
     }
   }
 }
