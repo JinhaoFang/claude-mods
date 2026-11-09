@@ -1,7 +1,7 @@
 {
   "name": "redact",
-  "version": "0.1.0",
-  "description": "Rewrites sensitive data (emails, IPs, credentials, addresses) out of what enters the model context",
+  "version": "0.2.0",
+  "description": "Rewrites sensitive data (emails, IPs, credentials, addresses, phone numbers) out of what enters the model context",
   "author": { "name": "JinhaoFang" },
   "types": "./types/index.d.ts",
   "userConfig": {
@@ -9,31 +9,31 @@
       "type": "boolean",
       "title": "Redact email addresses",
       "default": true,
-      "description": "Mask email addresses appearing in tool results and attachments"
+      "description": "Mask email addresses (example.com, noreply and git@ remotes are kept)"
     },
     "ipAddresses": {
       "type": "boolean",
       "title": "Redact IP addresses",
       "default": true,
-      "description": "Mask IPv4 and IPv6 addresses appearing in tool results and attachments"
+      "description": "Mask IPv4 and IPv6 addresses (loopback, documentation ranges and version numbers are kept)"
     },
     "credentials": {
       "type": "boolean",
       "title": "Redact keys and credentials",
       "default": true,
-      "description": "Mask API keys, tokens, JWTs, private key blocks and secret assignments"
+      "description": "Mask API keys, tokens, JWTs, private key blocks, URL passwords and secret assignments"
     },
     "addresses": {
       "type": "boolean",
       "title": "Redact residential addresses",
       "default": true,
-      "description": "Mask street-style and Chinese-format residential addresses"
+      "description": "Mask street addresses and Chinese road-and-number addresses"
     },
     "phoneNumbers": {
       "type": "boolean",
       "title": "Redact phone numbers",
-      "default": false,
-      "description": "Mask phone numbers; off by default because plain digit runs false-positive"
+      "default": true,
+      "description": "Mask phone numbers with a country code, separators, a mobile prefix or a label; bare digit runs are never touched"
     },
     "scrubPrompt": {
       "type": "boolean",

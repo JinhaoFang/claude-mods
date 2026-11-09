@@ -1,41 +1,41 @@
-// redact —— 在会话行存入上下文之前脱敏改写的入口。
-// 挂 session.append：doors 政策先门控（BASE_DOORS 默认洗 tool-result/tool-message/
-// attachment/notice/hook-context；response/note/compaction 永不洗；prompt/command 随
-// scrubPrompt；delivery 随 scrubPrompt 或非本人 origin——本人仅 origin.kind 为
-// composer 与 bridge，未知类别向保护侧失败），再经 washBlocks→washText 按固定顺序
-// 折叠规则表（PATTERN_LIBRARY：PEM→JWT→已知前缀→带标签赋值→.env→email→ipv6→ipv4→
-// 街道地址→中文地址→电话），命中计入 atom 'redact.hits'，toast 逐行提示（quiet 可关），
-// /redact 汇报本会话分类计数。改写抛错时该行原样放行并只记一次日志，注册级 .catch 兜底。
-// 类别集合与会话状态契约在 ../types；规则顺序、类别开关与占位符格式见 README.md。
+// redact: rewrites sensitive data into `[redact:<category>]` placeholders on
+// `session.append`, before a row is stored or sent to the model.
+//
+// Which rows are washed is the door policy (`washes`): tool output,
+// attachments, notices and hook context always; the person's own typing
+// (prompt, command, queue) only with scrubPrompt; deliveries unless a person
+// sent them; the model's own words, notes and compactions never. What is found
+// in a washed row is rules.ts's business.
+//
+// Placeholders are a mask, not the file: a model that read `[redact:email]`
+// and writes it back would overwrite the real value. A system-prompt section
+// says so, and a guard on Write and Edit refuses a write that would put more
+// placeholders into a file than it already holds.
+//
+// `/redact` reports this session's counts; `/redact off` pauses washing and
+// the guard for the session when a rule gets in the way, `/redact on` resumes.
 import { atom, read, update } from 'claude-code'
 import type {
   ApiContentBlock,
   PluginOptions,
   Register,
   SessionAppendDoor,
-  SessionAppendOrigin,
   SessionAppendMessage,
+  SessionAppendOrigin,
 } from 'claude-code'
-import type { Hits, RedactCategory } from '../types'
-
-type Category = RedactCategory
-type RowHits = Partial<Record<Category, number>>
-type DoorPolicy = (door: SessionAppendDoor, origin: SessionAppendOrigin) => boolean
-
-interface Pattern {
-  category: Category
-  regex: RegExp
-}
+import type { Hits } from '../types'
+import { countPlaceholders, detectorsFor, washText } from './rules'
+import type { Category, Detectors, RowHits } from './rules'
 
 interface Config {
-  wash: ReadonlySet<Category>
-  doors: ReadonlySet<SessionAppendDoor> | 'scrub'
+  categories: ReadonlySet<Category>
+  scrubPrompt: boolean
   quiet: boolean
 }
 
-interface Rules {
-  doors: DoorPolicy
-  patterns: readonly Pattern[]
+export interface Rules {
+  detectors: Detectors
+  scrubPrompt: boolean
   quiet: boolean
 }
 
@@ -45,18 +45,7 @@ interface Washed {
 }
 
 const ZERO_HITS: Hits = { email: 0, ipv4: 0, ipv6: 0, credential: 0, address: 0, phone: 0 }
-
 const CATEGORIES = Object.keys(ZERO_HITS) as Category[]
-
-const CONFIG_DEFAULTS = {
-  emails: true,
-  ipAddresses: true,
-  credentials: true,
-  addresses: true,
-  phoneNumbers: false,
-  scrubPrompt: false,
-  quiet: false,
-} as const
 
 const CATEGORY_SWITCHES = [
   ['email', 'emails'],
@@ -65,167 +54,83 @@ const CATEGORY_SWITCHES = [
   ['credential', 'credentials'],
   ['address', 'addresses'],
   ['phone', 'phoneNumbers'],
-] as const satisfies readonly (readonly [Category, keyof typeof CONFIG_DEFAULTS])[]
+] as const satisfies readonly (readonly [Category, string])[]
 
-const DOORS = [
-  'prompt',
-  'command',
-  'response',
-  'tool-result',
-  'tool-message',
-  'delivery',
-  'attachment',
-  'hook-context',
-  'note',
-  'compaction',
-  'notice',
-] as const satisfies readonly SessionAppendDoor[]
-
-const BASE_DOORS: Record<SessionAppendDoor, boolean> = {
-  'tool-result': true,
-  'tool-message': true,
-  attachment: true,
-  notice: true,
-  'hook-context': true,
-  prompt: false,
-  command: false,
-  delivery: false,
-  response: false,
-  note: false,
-  compaction: false,
-}
-
-const ALWAYS_WASH: ReadonlySet<SessionAppendDoor> = new Set(
-  DOORS.filter(door => BASE_DOORS[door]),
-)
-
-const NEVER_WASHED: ReadonlySet<SessionAppendDoor> = new Set<SessionAppendDoor>([
-  'response',
-  'note',
-  'compaction',
-])
+// `satisfies Record<SessionAppendDoor, …>` makes a door the engine adds a
+// type error here rather than a silent pass.
+const DOOR_POLICY = {
+  'tool-result': 'always',
+  'tool-message': 'always',
+  attachment: 'always',
+  notice: 'always',
+  'hook-context': 'always',
+  delivery: 'unless-person',
+  prompt: 'scrub',
+  command: 'scrub',
+  queue: 'scrub',
+  response: 'never',
+  note: 'never',
+  compaction: 'never',
+} as const satisfies Record<SessionAppendDoor, 'always' | 'unless-person' | 'scrub' | 'never'>
 
 const PERSON_ORIGIN_KINDS: ReadonlySet<string> = new Set(['composer', 'bridge'])
 
 const HITS = atom({ plugin: 'redact', key: 'hits' } as const, ZERO_HITS)
+const PAUSED = atom({ plugin: 'redact', key: 'paused' } as const, false)
 
-const PATTERN_LIBRARY: readonly Pattern[] = [
-  {
-    category: 'credential',
-    regex: /-----BEGIN [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY(?: BLOCK)?-----/g,
-  },
-  {
-    category: 'credential',
-    regex: /eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*\.[A-Za-z0-9_-]+/g,
-  },
-  {
-    category: 'credential',
-    regex: /\b(?:AKIA[A-Z0-9]{16}|gh[posu]_[A-Za-z0-9]{20,}|sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9]{16,}|AIza[A-Za-z0-9_-]{16,}|xox[baprs]-[A-Za-z0-9_-]{10,})/g,
-  },
-  {
-    category: 'credential',
-    regex: /(?:api[_-]?key|token|secret|password)\s*[=:]\s*["']?[A-Za-z0-9+/_=-]{16,}/g,
-  },
-  {
-    category: 'credential',
-    regex: /^[A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD)[A-Z0-9_]*[ \t]*=[ \t]*[^\[\s]\S{7,}$/gm,
-  },
-  {
-    category: 'email',
-    regex: /[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}/g,
-  },
-  {
-    category: 'ipv6',
-    regex: /\b(?:[A-Fa-f0-9]{1,4}:){1,6}:[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{1,4}){0,5}\b(?!\.\d)|\b::[A-Fa-f0-9]{1,4}(?::[A-Fa-f0-9]{1,4}){0,5}\b(?!\.\d)|\b(?:[A-Fa-f0-9]{1,4}:){3,7}[A-Fa-f0-9]{1,4}\b/g,
-  },
-  {
-    category: 'ipv4',
-    regex: /\b(?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\b/g,
-  },
-  {
-    category: 'address',
-    regex: /\b\d{1,5}(?:\s+[A-Za-z][a-z]+){1,4}\s(?:Street|St|Avenue|Ave|Road|Rd|Boulevard|Blvd|Lane|Ln|Drive|Dr|Court|Ct|Way|Place|Pl|Terrace|Ter|Parkway|Pkwy|Highway|Hwy)\b\.?(?:\s+(?:Apt|Unit|Suite|Ste)\s*[A-Za-z0-9-]+)?/g,
-  },
-  {
-    category: 'address',
-    regex: /\d{1,4}(?:省|市|区|县|路|街|巷|号)(?:[一-鿿]{1,12}(?:楼|室|栋))?/g,
-  },
-  {
-    category: 'phone',
-    regex: /\b\d{7,15}\b/g,
-  },
-]
+const PLACEHOLDER_NOTE = [
+  'Some tool results and attachments in this session pass through the redact mod,',
+  'which replaces sensitive values with placeholders such as `[redact:email]`,',
+  '`[redact:credential]` or `[redact:phone]`. A placeholder stands for a real value',
+  'that is still in the file or output; it is not the file content. Never write a',
+  'placeholder into a file and never use one inside an Edit `old_string`: edit',
+  'around it, and ask the person when the real value is needed.',
+].join(' ')
 
 export function readConfig(options: PluginOptions): Config {
   const bool = (value: unknown, fallback: boolean) =>
     typeof value === 'boolean' ? value : fallback
   return {
-    wash: new Set<Category>(
-      CATEGORY_SWITCHES
-        .filter(([, option]) => bool(options[option], CONFIG_DEFAULTS[option]))
-        .map(([category]) => category),
+    categories: new Set<Category>(
+      CATEGORY_SWITCHES.filter(([, option]) => bool(options[option], true)).map(([category]) => category),
     ),
-    doors: bool(options.scrubPrompt, false) ? 'scrub' : ALWAYS_WASH,
+    scrubPrompt: bool(options.scrubPrompt, false),
     quiet: bool(options.quiet, false),
   }
 }
 
-function isPersonOrigin(origin: SessionAppendOrigin): boolean {
-  return PERSON_ORIGIN_KINDS.has(origin.kind)
-}
-
 export function compileRules(config: Config): Rules {
-  const doors = config.doors
-  const policy: DoorPolicy =
-    doors === 'scrub'
-      ? door => !NEVER_WASHED.has(door)
-      : (door, origin) =>
-          door === 'delivery' ? !isPersonOrigin(origin) : doors.has(door)
   return {
-    doors: policy,
-    patterns: PATTERN_LIBRARY.filter(pattern => config.wash.has(pattern.category)),
+    detectors: detectorsFor(config.categories),
+    scrubPrompt: config.scrubPrompt,
     quiet: config.quiet,
   }
 }
 
-function washText(text: string, patterns: readonly Pattern[], hits: RowHits): string {
-  let out = text
-  for (const pattern of patterns) {
-    out = out.replace(pattern.regex, () => {
-      hits[pattern.category] = (hits[pattern.category] ?? 0) + 1
-      return `[redact:${pattern.category}]`
-    })
-  }
-  return out
+export function washes(door: SessionAppendDoor, origin: SessionAppendOrigin, rules: Rules): boolean {
+  // An unknown door fails toward washing.
+  const policy = (DOOR_POLICY as Record<string, string>)[door] ?? 'always'
+  if (policy === 'always') return true
+  if (policy === 'never') return false
+  if (policy === 'scrub') return rules.scrubPrompt
+  return rules.scrubPrompt || !PERSON_ORIGIN_KINDS.has(origin.kind)
 }
 
-function washBlock(
-  block: ApiContentBlock,
-  patterns: readonly Pattern[],
-  hits: RowHits,
-): ApiContentBlock {
+function washBlock(block: ApiContentBlock, detectors: Detectors, hits: RowHits): ApiContentBlock {
   if (block.type === 'text' && typeof block.text === 'string') {
-    const text = washText(block.text, patterns, hits)
+    const text = washText(block.text, detectors, hits)
     return text === block.text ? block : { ...block, text }
   }
   if (block.type === 'tool_result' && typeof block.content === 'string') {
-    const text = washText(block.content, patterns, hits)
-    return text === block.content ? block : { ...block, content: text }
+    const content = washText(block.content, detectors, hits)
+    return content === block.content ? block : { ...block, content }
   }
   if (block.type === 'tool_result' && Array.isArray(block.content)) {
     const inner: readonly ApiContentBlock[] = block.content
-    const content = washBlocks(inner, patterns, hits)
-    return content.every((after, index) => after === inner[index]) ? block : { ...block, content }
+    const content = inner.map(b => washBlock(b, detectors, hits))
+    return content.every((after, i) => after === inner[i]) ? block : { ...block, content }
   }
   return block
-}
-
-function washBlocks(
-  blocks: readonly ApiContentBlock[],
-  patterns: readonly Pattern[],
-  hits: RowHits,
-): ApiContentBlock[] {
-  return blocks.map(block => washBlock(block, patterns, hits))
 }
 
 function hasHits(hits: RowHits): boolean {
@@ -238,15 +143,15 @@ export function redactRow(
   message: SessionAppendMessage,
   rules: Rules,
 ): Washed {
-  if (!rules.doors(door, origin)) return { message, hits: {} }
+  if (!washes(door, origin, rules)) return { message, hits: {} }
   const hits: RowHits = {}
-  const content = washBlocks(message.content, rules.patterns, hits)
+  const content = message.content.map(block => washBlock(block, rules.detectors, hits))
   if (!hasHits(hits)) return { message, hits }
   return { message: { ...message, content }, hits }
 }
 
 function addHits(prev: Hits | undefined, hits: RowHits): Hits {
-  const next = { ...(prev ?? ZERO_HITS) }
+  const next = { ...ZERO_HITS, ...prev }
   for (const category of CATEGORIES) next[category] += hits[category] ?? 0
   return next
 }
@@ -257,18 +162,24 @@ function formatHits(hits: RowHits): string {
     .join(', ')
 }
 
-function formatReport(hits: Hits): string {
-  const total = CATEGORIES.reduce((sum, category) => sum + hits[category], 0)
-  if (total === 0) return 'redact: nothing rewritten this session'
-  const parts = CATEGORIES.map(category => `${hits[category]} ${category}`)
-  return `redact: ${parts.join(', ')} (${total} total)`
+function formatReport(hits: Hits, paused: boolean): string {
+  const total = CATEGORIES.reduce((sum, category) => sum + (hits[category] ?? 0), 0)
+  const state = paused ? ' (paused — /redact on resumes)' : ''
+  if (total === 0) return `redact: nothing rewritten this session${state}`
+  const parts = CATEGORIES.map(category => `${hits[category] ?? 0} ${category}`)
+  return `redact: ${parts.join(', ')} (${total} total)${state}`
 }
+
+const GUARD_DENY =
+  'redact: this write would put a [redact:…] placeholder into the file, overwriting the real value it masks. ' +
+  'Leave the placeholder text out and edit around it. If the literal placeholder is really wanted, the person can run /redact off.'
 
 export const register: Register = (on, options) => {
   const rules = compileRules(readConfig(options))
   let logged = false
 
   on('session.append', async ($, e, next) => {
+    if (await read($, PAUSED)) return next(e)
     let washed: Washed
     try {
       washed = redactRow(e.door, e.origin, e.message, rules)
@@ -285,15 +196,45 @@ export const register: Register = (on, options) => {
     return next({ ...e, message: washed.message })
   }).catch(($, e, next) => next(e))
 
+  on('prompt.compose', async ($, e, next) => {
+    const composed = await next(e)
+    return {
+      sections: [...composed.sections, { id: 'redact:placeholders', text: PLACEHOLDER_NOTE, scope: 'session' }],
+    }
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'Edit' }, async ($, e, next) => {
+    if (await read($, PAUSED)) return next(e)
+    return countPlaceholders(e.new_string) > countPlaceholders(e.old_string) ? { deny: GUARD_DENY } : next(e)
+  }).catch(($, e, next) => next(e))
+
+  on('tool.call', { tool: 'Write' }, async ($, e, next) => {
+    if (await read($, PAUSED)) return next(e)
+    const writing = countPlaceholders(e.content)
+    if (writing === 0) return next(e)
+    const existing = (await $.fs.exists(e.file_path)) ? countPlaceholders(await $.fs.read(e.file_path)) : 0
+    return writing > existing ? { deny: GUARD_DENY } : next(e)
+  }).catch(($, e, next) => next(e))
+
   on('session.start', async ($, e, next) => {
     await $.command.register({
       name: 'redact',
-      description: "Show this session's redaction counts",
+      description: "Show this session's redaction counts; `/redact off` pauses, `/redact on` resumes",
     })
     return next(e)
   })
 
-  on('command.run', { command: 'redact' }, async $ => ({
-    text: formatReport(await read($, HITS)),
-  }))
+  on('command.run', { command: 'redact' }, async ($, e) => {
+    const arg = (e.args ?? '').trim().toLowerCase()
+    if (arg === 'off' || arg === 'pause') {
+      await update($, PAUSED, () => true)
+      return { text: 'redact: paused for this session. Rows pass unwashed until /redact on.' }
+    }
+    if (arg === 'on' || arg === 'resume') {
+      await update($, PAUSED, () => false)
+      return { text: 'redact: washing again.' }
+    }
+    if (arg !== '') return { text: 'redact: usage — /redact, /redact off, /redact on' }
+    return { text: formatReport(await read($, HITS), await read($, PAUSED)) }
+  })
 }
