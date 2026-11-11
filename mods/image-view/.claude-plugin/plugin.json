@@ -1,7 +1,7 @@
 {
   "name": "image-view",
-  "version": "1.1.0",
-  "description": "Previews images in the prompt and in the transcript: pasted images and image paths above the prompt, images a tool read under its result; pictures in kitty and Ghostty, half-block thumbnails elsewhere, each with a link to the file",
+  "version": "1.2.0",
+  "description": "Previews images in the prompt and in the transcript: pasted images and image paths above the prompt, images a tool read under its result; pictures in kitty and Ghostty, block thumbnails elsewhere, each with a link to the file",
   "author": { "name": "JinhaoFang" },
   "types": "./types/index.d.ts"
 }

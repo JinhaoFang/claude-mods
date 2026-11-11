@@ -2,9 +2,9 @@ import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
 import type { PromptChangeInput, PromptEditInput } from 'claude-code'
 
-import { drawsPictures, fitOne, fitRow, pngSize, toolImages } from '../hooks/images'
+import { drawsPictures, fitOne, fitRow, limitsTo256Colors, pngSize, toolImages } from '../hooks/images'
 import { displayPath, draftRefs, fileUrl, resolvePath } from '../hooks/paths'
-import { base64ToBytes, blockCells, decodeThumb, TRANSPARENT } from '../hooks/png'
+import { base64ToBytes, blockCells, decodeThumb, SWATCHES, TRANSPARENT } from '../hooks/png'
 
 function pngBase64(width: number, height: number): string {
   const bytes = new Uint8Array(33)
@@ -90,10 +90,10 @@ test('a picture keeps its shape within its rows and columns', () => {
 
 test('a row of tiles shrinks until it fits the band', () => {
   const square = { width: 500, height: 500 }
-  expect(fitRow([square], 20, 120)).toEqual([{ columns: 16, rows: 8 }])
+  expect(fitRow([square], 20, 120)).toEqual([{ columns: 24, rows: 12 }])
   // The caption takes a row of the band.
   expect(fitRow([square], 5, 120)).toEqual([{ columns: 8, rows: 4 }])
-  // Three 8-row squares need 3 * 16 + 2 * 2 = 52 columns; 40 forces 6 rows.
+  // Three 12-row squares need 3 * 24 + 2 * 2 = 76 columns; 40 forces 6 rows.
   expect(fitRow([square, square, square], 20, 40)).toEqual([
     { columns: 12, rows: 6 },
     { columns: 12, rows: 6 },
@@ -121,10 +121,57 @@ test('a PNG decodes through every row filter, alpha and palette', () => {
   expect(decodeThumb(base64ToBytes(RGBA_PNG.slice(0, 80)))).toBeNull()
 })
 
-test('blocks put two pixels in a cell and let the background show through transparent ones', () => {
-  const thumb = { width: 1, height: 4, colors: Uint32Array.of(0xff0000, 0x00ff00, TRANSPARENT, 0x0000ff) }
-  const words = new Uint32Array(base64ToBytes(blockCells(thumb, 1, 2)).buffer)
-  expect([...words]).toEqual([0x2580, 0xff0000, 0x00ff00, 0x2584, 0x0000ff, TRANSPARENT])
+test('blocks put four pixels in a cell, in its two closest colors, and let transparent ones show through', () => {
+  const cells = (colors: number[], columns: number, rows: number) =>
+    [...new Uint32Array(base64ToBytes(blockCells({ width: columns * 2, height: rows * 2, colors: Uint32Array.from(colors) }, columns, rows)).buffer)]
+  const [red, blue, green] = [0xff0000, 0x0000ff, 0x00ff00]
+  // Top left alone in red: ▘ red over blue.
+  expect(cells([red, blue, blue, blue], 1, 1)).toEqual([0x2598, red, blue])
+  // A diagonal: ▚.
+  expect(cells([red, blue, blue, red], 1, 1)).toEqual([0x259a, red, blue])
+  // One color: the background alone.
+  expect(cells([green, green, green, green], 1, 1)).toEqual([0x20, TRANSPARENT, green])
+  // A faint difference still draws: ▙ white over a lighter gray.
+  expect(cells([0xffffff, 0xf4f4f4, 0xffffff, 0xffffff], 1, 1)).toEqual([0x2599, 0xffffff, 0xf4f4f4])
+  // A transparent bottom half: ▀ over the terminal's own background.
+  expect(cells([red, red, TRANSPARENT, TRANSPARENT], 1, 1)).toEqual([0x2580, red, TRANSPARENT])
+  expect(cells([TRANSPARENT, TRANSPARENT, TRANSPARENT, TRANSPARENT], 1, 1)).toEqual([0x20, TRANSPARENT, TRANSPARENT])
+})
+
+// Claude Code's own mapping in 256 colors (chalk's rgbToAnsi256), and the xterm palette color shown for it.
+function shownIn256(color: number): number {
+  const [r, g, b] = [color >> 16, (color >> 8) & 0xff, color & 0xff]
+  const index =
+    r === g && g === b
+      ? r < 8 ? 16 : r > 248 ? 231 : Math.round(((r - 8) / 247) * 24) + 232
+      : 16 + 36 * Math.round((r / 255) * 5) + 6 * Math.round((g / 255) * 5) + Math.round((b / 255) * 5)
+  if (index >= 232) return 0x010101 * (8 + 10 * (index - 232))
+  const cube = [0, 95, 135, 175, 215, 255]
+  const i = index - 16
+  return (cube[Math.floor(i / 36)]! << 16) | (cube[Math.floor(i / 6) % 6]! << 8) | cube[i % 6]!
+}
+
+test('in 256 colors each block is sent in a color that Claude Code maps to the palette color meant', () => {
+  for (const swatch of SWATCHES) expect(shownIn256(swatch.sent)).toBe(swatch.shown)
+  const one = (color: number) => {
+    const words = new Uint32Array(base64ToBytes(blockCells({ width: 2, height: 2, colors: Uint32Array.of(color, color, color, color) }, 1, 1, true)).buffer)
+    return shownIn256(words[2]!)
+  }
+  // Claude Code alone would turn this pale blue cyan (#d7ffff); the closest-looking palette color is not.
+  expect(shownIn256(0xe3eefb)).toBe(0xd7ffff)
+  expect(one(0xe3eefb)).not.toBe(0xd7ffff)
+  // A dark green stays green rather than going gray.
+  const green = one(0x2d733c)
+  expect(((green >> 8) & 0xff) > (green >> 16) && ((green >> 8) & 0xff) > (green & 0xff)).toBe(true)
+  // Two quarters that land on one palette color are one background.
+  const words = new Uint32Array(base64ToBytes(blockCells({ width: 2, height: 2, colors: Uint32Array.of(0xffffff, 0xfafafa, 0xffffff, 0xffffff) }, 1, 1, true)).buffer)
+  expect([...words]).toEqual([0x20, TRANSPARENT, 0xffffff])
+})
+
+test('Claude Code draws 256 colors in VS Code and full color elsewhere', () => {
+  expect(limitsTo256Colors({ TERM_PROGRAM: 'vscode' })).toBe(true)
+  expect(limitsTo256Colors({ TERM_PROGRAM: 'iTerm.app' })).toBe(false)
+  expect(limitsTo256Colors({})).toBe(false)
 })
 
 test('pictures are drawn in kitty and Ghostty, not in editors, tmux, screen, ssh or the background', () => {
@@ -203,7 +250,7 @@ test('in VS Code the band draws PNGs in blocks, every image with a link, and cle
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Image' })).toBeUndefined()
   const rasters = await ui.findAll({ type: 'Raster' })
-  expect(rasters.map(raster => [raster.props.columns, raster.props.rows])).toEqual([[32, 8], [32, 8]])
+  expect(rasters.map(raster => [raster.props.columns, raster.props.rows])).toEqual([[48, 12], [48, 12]])
   expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([
     `file://wsl.localhost/Ubuntu${IMAGES}/1.png`,
     'file://wsl.localhost/Ubuntu/work/shots/a.png',
@@ -234,7 +281,7 @@ test('in kitty the band draws PNG files as pictures; a tag with no cached file s
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Raster' })).toBeUndefined()
   expect((await ui.findAll({ type: 'Image' })).map(image => image.props)).toEqual([
-    expect.objectContaining({ source: { file: `${IMAGES}/1.png`, format: 'png', generation: 1000 }, columns: 32, rows: 8 }),
+    expect.objectContaining({ source: { file: `${IMAGES}/1.png`, format: 'png', generation: 1000 }, columns: 48, rows: 12 }),
   ])
   expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([`file://${IMAGES}/1.png`, 'file:///work/b.jpg'])
   expect(await ui.find({ type: 'Text', text: /not found/ })).toBeDefined()
@@ -265,7 +312,7 @@ test('an image a Read returned shows under its result: blocks in VS Code, the pi
   const ui = await $.ui.mount(readResult('toolu_1', RGBA_PNG))
   expect(await ui.find({ type: 'Text', text: 'engine' })).toBeDefined()
   expect(await ui.find({ type: 'Image' })).toBeUndefined()
-  expect((await ui.find({ type: 'Raster' }))?.props).toMatchObject({ columns: 48, rows: 12 })
+  expect((await ui.find({ type: 'Raster' }))?.props).toMatchObject({ columns: 80, rows: 20 })
   expect((await ui.find({ type: 'Link' }))?.props.href).toBe('file:///work/shots/a.png')
   expect(await ui.find({ type: 'Text', text: /shots\/a\.png/ })).toBeDefined()
   await ui.unmount()
@@ -274,7 +321,7 @@ test('an image a Read returned shows under its result: blocks in VS Code, the pi
 test('in kitty a Read image is drawn from its bytes', async ($, on) => {
   engineBeneath(on, KITTY)
   const ui = await $.ui.mount(readResult('toolu_2', RGBA_PNG))
-  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ source: { png: RGBA_PNG }, columns: 48, rows: 12 })
+  expect((await ui.find({ type: 'Image' }))?.props).toMatchObject({ source: { png: RGBA_PNG }, columns: 80, rows: 20 })
   expect(await ui.find({ type: 'Raster' })).toBeUndefined()
   await ui.unmount()
 })

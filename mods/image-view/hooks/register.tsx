@@ -2,7 +2,7 @@ import { atom, read, update } from 'claude-code'
 import type { Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 
 import type { Preview } from '../types'
-import { base64Bytes, drawsPictures, fitOne, fitRow, pngSize, toolImages } from './images'
+import { base64Bytes, drawsPictures, fitOne, fitRow, limitsTo256Colors, pngSize, toolImages } from './images'
 import type { TerminalEnv, ToolImage } from './images'
 import { displayPath, draftRefs, fileUrl, resolvePath } from './paths'
 import type { PathContext } from './paths'
@@ -11,8 +11,8 @@ import type { Thumb } from './png'
 
 const RETRY_MS = 200
 const RETRIES = 10
-const TRANSCRIPT_ROWS = 12
-const TRANSCRIPT_MAX_COLUMNS = 80
+const TRANSCRIPT_ROWS = 20
+const TRANSCRIPT_MAX_COLUMNS = 100
 const TRANSCRIPT_INDENT = 5
 const MAX_READ_BYTES = 4 * 1024 * 1024
 const MAX_TREE_BYTES = 2 * 1024 * 1024
@@ -22,6 +22,7 @@ const draft = atom({ plugin: 'image-view', key: 'draft' } as const, [] as Previe
 const readPaths = atom({ plugin: 'image-view', key: 'readPaths' } as const, {} as Record<string, string>)
 
 let pictures: boolean | undefined
+let in256Colors = false
 let context: PathContext | undefined
 let tmpRoot: string | undefined
 let sessionImages: { sessionId: string; dir: string } | undefined
@@ -58,6 +59,7 @@ async function canDrawPictures($: EngineInterface): Promise<boolean> {
       CLAUDE_CODE_FORCE_TERMINAL_IMAGES: await $.env.get('CLAUDE_CODE_FORCE_TERMINAL_IMAGES'),
     }
     pictures = drawsPictures(env)
+    in256Colors = limitsTo256Colors(env)
   }
   return pictures
 }
@@ -183,7 +185,7 @@ function picture({ Image, Raster }: TerminalElements, preview: Preview, key: str
     return <Image key={`image-${key}`} source={preview.picture} columns={columns} rows={rows} alt={preview.label} />
   }
   const thumb = preview.thumb === undefined ? undefined : thumbs.get(preview.thumb)
-  return thumb ? <Raster key={`blocks-${key}`} columns={columns} rows={rows} cells={blockCells(thumb, columns, rows)} /> : ''
+  return thumb ? <Raster key={`blocks-${key}`} columns={columns} rows={rows} cells={blockCells(thumb, columns, rows, in256Colors)} /> : ''
 }
 
 // A tile is narrow: its caption names the file, and the link still opens the whole path.

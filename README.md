@@ -13,7 +13,7 @@ The catalog lists every mod in this marketplace; each entry installs from here.
 | [context-band](mods/context-band/README.md) | Read-only band above the prompt: model and effort, context fill, and the 5h / 7d plan windows in their own colours with their own reset times, or the session cost | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
 | [block-destructive-commands](mods/block-destructive-commands/README.md) | Denies destructive Bash commands (recursive rm on roots, force push, hard reset, destructive SQL, disk formatting) before they run | `/plugin install block-destructive-commands --marketplace JinhaoFang/claude-mods` |
 | [agent-flow](mods/agent-flow/README.md) | Live tree of the session's subagents and teammates in a pane beside the transcript; prints as text where no pane can be drawn | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
-| [image-view](mods/image-view/README.md) | Previews images above the prompt (pasted, or a path you type or drop) and under the tool call that read them; pictures in kitty and Ghostty, half-block thumbnails in any other terminal, each with a link to the file | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
+| [image-view](mods/image-view/README.md) | Previews images above the prompt (pasted, or a path you type or drop) and under the tool call that read them; pictures in kitty and Ghostty, block thumbnails in any other terminal, each with a link to the file | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
 | [redact](mods/redact/README.md) | Rewrites sensitive data (emails, IPs, credentials, addresses, phone numbers) into placeholders before it enters the model context; precision-first rules leave DOIs, hashes and version numbers alone | `/plugin install redact --marketplace JinhaoFang/claude-mods` |
 
 ## Previews
@@ -34,9 +34,9 @@ The pane's rows for a session with four subagents, drawn from the mod's own outp
 
 ### image-view
 
-In a terminal that draws no pictures, such as the VS Code terminal, a PNG is drawn in half blocks: a 320×160 test image in 48×12 cells, drawn from the mod's own output. kitty and Ghostty get the picture itself.
+In a terminal that draws no pictures, such as the VS Code terminal, a PNG is drawn in quadrant blocks: a 320×160 test image in 48×12 cells, drawn from the mod's own output. kitty and Ghostty get the picture itself.
 
-![image-view: a PNG drawn as a half-block thumbnail](mods/image-view/assets/blocks.png)
+![image-view: a PNG drawn as a block thumbnail](mods/image-view/assets/blocks.png)
 
 ## Install
 
