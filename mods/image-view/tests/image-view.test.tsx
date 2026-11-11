@@ -1,5 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 import type { TestBody } from 'claude-code/testing'
+import type { PromptChangeInput, PromptEditInput } from 'claude-code'
 
 import { fitOne, fitRow, pngSize, toolImages } from '../hooks/images'
 import { displayPath, draftRefs, fileUrl, resolvePath } from '../hooks/paths'
@@ -13,7 +14,7 @@ function pngBase64(width: number, height: number): string {
   return btoa(String.fromCharCode(...bytes))
 }
 
-const WSL = { cwd: '/work/app', home: '/home/me', isWsl: true }
+const WSL = { cwd: '/work/app', home: '/home/me', wslDistro: 'Ubuntu' }
 
 test('a draft yields its pasted tags and image paths in order, each once', () => {
   const draft = `see [Image #2], @shots/a.png and "/tmp/my shot.PNG" or my\\ pic.jpg (b.webp). [Image #2] a.png notes.txt`
@@ -36,7 +37,7 @@ test('written paths resolve against the working directory, home and Windows driv
   expect(resolvePath('\\\\wsl.localhost\\Ubuntu\\home\\me\\a.png', WSL)).toBe('/home/me/a.png')
   expect(resolvePath('file:///tmp/my%20shot.png', WSL)).toBe('/tmp/my shot.png')
   expect(resolvePath('file:///D:/pics/a.png', WSL)).toBe('/mnt/d/pics/a.png')
-  expect(resolvePath('C:\\a.png', { ...WSL, isWsl: false })).toBeUndefined()
+  expect(resolvePath('C:\\a.png', { cwd: '/work/app', home: '/home/me' })).toBeUndefined()
   expect(resolvePath('\\\\server\\share\\a.png', WSL)).toBeUndefined()
 })
 
@@ -45,6 +46,8 @@ test('captions shorten paths and links escape what a URL reads specially', () =>
   expect(displayPath('/home/me/a.png', WSL)).toBe('~/a.png')
   expect(displayPath('/tmp/a.png', WSL)).toBe('/tmp/a.png')
   expect(fileUrl('/tmp/my shot #1?.png')).toBe('file:///tmp/my%20shot%20%231%3F.png')
+  // On WSL, Windows opens the click, through the distribution's share.
+  expect(fileUrl('/root/a.png', 'Ubuntu22.04')).toBe('file://wsl.localhost/Ubuntu22.04/root/a.png')
 })
 
 test('PNG size is read from the IHDR header', () => {
@@ -106,12 +109,16 @@ const BAND = {
   props: { hasSurvey: false, isWorking: false, maxRows: 20, bodyColumns: 120, scroll: { offset: 0, bodyRows: 20 }, view: {} },
 } as const
 
-function engineBeneath(on: Parameters<TestBody>[1], draft: () => string, deny: string | undefined) {
+function engineBeneath(on: Parameters<TestBody>[1], deny: string | undefined, env: Record<string, string> = {}) {
   on('session.start', () => ({ cwd: '/work' }))
   on('session.cwd', () => ({ value: '/work' }))
   on('session.id', () => ({ value: 'sess-1' }))
-  on('prompt.read', () => ({ value: { text: draft(), cursor: 0 } }))
-  on('env.get', ($, e) => ({ value: ({ HOME: '/home/me', CLAUDE_CODE_TMPDIR: '/tmp/claude-501' } as Record<string, string>)[e.name] }))
+  on('prompt.edit', ($, e) => {
+    const text = e.text.slice(0, e.start) + e.inputText + e.text.slice(e.end)
+    return { text, cursor: e.start + e.inputText.length }
+  })
+  on('prompt.change', ($, e) => ({ text: e.text, cursor: e.cursor }))
+  on('env.get', ($, e) => ({ value: { HOME: '/home/me', CLAUDE_CODE_TMPDIR: '/tmp/claude-501', ...env }[e.name] }))
   on('fs.list', () => ({ value: [{ name: '-work', kind: 'dir', size: 0, mtimeMs: 0, isLink: false }] }))
   on('fs.exists', ($, e) => ({ value: e.path === '/tmp/claude-501/-work/sess-1/images' }))
   on('fs.stat', ($, e) =>
@@ -127,17 +134,29 @@ function engineBeneath(on: Parameters<TestBody>[1], draft: () => string, deny: s
   })
 }
 
-test('where the terminal draws its alt, the band lists each image as a link and draws no picture', async ($, on) => {
-  const clock = mock.clock(on)
-  let draft = 'compare [Image #1] with shots/a.png and b.jpg'
-  engineBeneath(on, () => draft, 'the Image draws its alt here: no placeholder images')
+// The test engine raises the prompt box's events, but its types leave them out.
+type PromptEvents = { edit: (e: PromptEditInput) => Promise<unknown>; change: (e: PromptChangeInput) => Promise<unknown> }
+const prompt = ($: Parameters<TestBody>[0]) => $.prompt as unknown as PromptEvents
 
-  await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
+function typeInto($: Parameters<TestBody>[0], before: string, inputText: string) {
+  return prompt($).edit({ origin: { kind: 'composer' }, text: before, cursor: before.length, start: before.length, end: before.length, inputText })
+}
+
+test('where the terminal draws its alt, the band lists each image as a link and draws no picture', async ($, on) => {
+  // No session.start: a mod updated mid-session never sees one, and the band still follows the draft.
+  const clock = mock.clock(on)
+  engineBeneath(on, 'the Image draws its alt here: no placeholder images')
+
   const probing = await $.ui.mount(BAND)
   expect((await probing.find({ type: 'Image' }))?.props).toMatchObject({ columns: 1, rows: 1 })
   await probing.unmount()
-
   await clock.advance(2000)
+
+  await typeInto($, '', 'compare shots/a.png and b.jpg')
+  // A pasted path becomes a tag through a change no edit carried.
+  await prompt($).change({ text: '[Image #1] compare shots/a.png and b.jpg', cursor: 0, origin: { kind: 'clear' } })
+  await clock.advance(0)
+
   const ui = await $.ui.mount(BAND)
   expect(await ui.find({ type: 'Image' })).toBeUndefined()
   const links = await ui.findAll({ type: 'Link' })
@@ -149,22 +168,24 @@ test('where the terminal draws its alt, the band lists each image as a link and 
   expect(await ui.find({ type: 'Text', text: /800×400/ })).toBeDefined()
   await ui.unmount()
 
-  // Sending the prompt empties the band.
-  draft = ''
-  await clock.advance(200)
+  // Sending the prompt clears the box, and the band with it.
+  await prompt($).change({ text: '', cursor: 0, origin: { kind: 'clear' } })
+  await clock.advance(0)
   const after = await $.ui.mount(BAND)
   expect(await after.find({ type: 'Link' })).toBeUndefined()
   expect(await after.find({ type: 'Text', text: 'engine' })).toBeDefined()
   await after.unmount()
 })
 
-test('where the terminal draws pictures, PNGs are tiles and other formats stay links', async ($, on) => {
+test('where the terminal draws pictures, PNGs are tiles, other formats stay links, and WSL links go through its share', async ($, on) => {
   const clock = mock.clock(on)
-  engineBeneath(on, () => '[Image #1] b.jpg [Image #2]', undefined)
+  engineBeneath(on, undefined, { WSL_DISTRO_NAME: 'Ubuntu' })
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
   await (await $.ui.mount(BAND)).unmount()
   await clock.advance(2000)
+  await typeInto($, '', '[Image #1] b.jpg [Image #2]')
+  await clock.advance(0)
 
   const ui = await $.ui.mount(BAND)
   const images = await ui.findAll({ type: 'Image' })
@@ -176,8 +197,8 @@ test('where the terminal draws pictures, PNGs are tiles and other formats stay l
     }),
   ])
   expect((await ui.findAll({ type: 'Link' })).map(link => link.props.href)).toEqual([
-    'file:///tmp/claude-501/-work/sess-1/images/1.png',
-    'file:///work/b.jpg',
+    'file://wsl.localhost/Ubuntu/tmp/claude-501/-work/sess-1/images/1.png',
+    'file://wsl.localhost/Ubuntu/work/b.jpg',
   ])
   // #2 has no cached file yet.
   expect(await ui.find({ type: 'Text', text: /not found/ })).toBeDefined()
@@ -203,7 +224,7 @@ function readResult(id: string, png: string) {
 test('an image a Read returned shows under its result: a link before the probe, a picture after it', async ($, on) => {
   const clock = mock.clock(on)
   const png = pngBase64(800, 400)
-  engineBeneath(on, () => '', undefined)
+  engineBeneath(on, undefined)
   on('tool.call', () => ({ result: { type: 'image', file: { base64: png, type: 'image/png', originalSize: 64 } } }))
 
   await $.session.start({ surface: 'terminal', isInteractive: true, cwd: '/work' })
@@ -226,7 +247,7 @@ test('an image a Read returned shows under its result: a link before the probe, 
 
 test('a folded run of reads shows its images below the line, and leaves the expanded view to the engine', async ($, on) => {
   const png = pngBase64(800, 400)
-  engineBeneath(on, () => '', undefined)
+  engineBeneath(on, undefined)
   const call = (id: string, file: string, output: unknown) => ({
     tool_use_id: id,
     tool: 'Read',

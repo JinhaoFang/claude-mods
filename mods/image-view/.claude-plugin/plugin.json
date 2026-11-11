@@ -1,6 +1,6 @@
 {
   "name": "image-view",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Previews images in the prompt and in the transcript: pasted images and image paths above the prompt, images a tool read under its result; a link to open each where the terminal draws no pictures",
   "author": { "name": "JinhaoFang" },
   "types": "./types/index.d.ts"
