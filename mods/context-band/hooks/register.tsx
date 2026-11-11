@@ -333,6 +333,8 @@ export const register: Register = (on, rawOptions) => {
       columns,
       config,
     )
+    // The band is shared: what the plugins beneath draw goes under these rows.
+    const below = await next(e)
 
     return (
       <Box flexDirection="column">
@@ -350,6 +352,7 @@ export const register: Register = (on, rawOptions) => {
             </Text>
           ))}
         </Box>
+        {below}
       </Box>
     )
   })
