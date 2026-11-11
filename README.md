@@ -13,7 +13,7 @@ The catalog lists every mod in this marketplace; each entry installs from here.
 | [context-band](mods/context-band/README.md) | Read-only band above the prompt: model and effort, context fill, and the 5h / 7d plan windows in their own colours with their own reset times, or the session cost | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
 | [block-destructive-commands](mods/block-destructive-commands/README.md) | Denies destructive Bash commands (recursive rm on roots, force push, hard reset, destructive SQL, disk formatting) before they run | `/plugin install block-destructive-commands --marketplace JinhaoFang/claude-mods` |
 | [agent-flow](mods/agent-flow/README.md) | Live tree of the session's subagents and teammates in a pane beside the transcript; prints as text where no pane can be drawn | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
-| [image-view](mods/image-view/README.md) | Thumbnails of the images you paste above the prompt, instead of bare `[Image #1]` tags | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
+| [image-view](mods/image-view/README.md) | Previews images above the prompt (pasted, or a path you type or drop) and under the tool call that read them; pictures in kitty and Ghostty, a link to open the file in any other terminal | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
 | [redact](mods/redact/README.md) | Rewrites sensitive data (emails, IPs, credentials, addresses, phone numbers) into placeholders before it enters the model context; precision-first rules leave DOIs, hashes and version numbers alone | `/plugin install redact --marketplace JinhaoFang/claude-mods` |
 
 ## Previews
@@ -34,7 +34,13 @@ The pane's rows for a session with four subagents, drawn from the mod's own outp
 
 ### image-view
 
-![image-view: thumbnails of pasted images above the prompt](mods/image-view/claude-image-view.png)
+The band where the terminal draws no pictures, such as the VS Code terminal: each image is a line whose name opens the file. In kitty and Ghostty, PNGs are drawn as pictures instead:
+
+```
+[Image #1]  1280×720
+shots/login.png  640×480
+❯ why does the header differ between [Image #1] and shots/login.png
+```
 
 ## Install
 
