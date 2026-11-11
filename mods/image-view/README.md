@@ -2,7 +2,7 @@
 
 [English](README.md) | [中文](README.zh-CN.md)
 
-A Claude Code mod that shows you the images in a session: the ones you paste or name in the prompt, and the ones a tool reads for the model. Where the terminal can draw pictures you see the image itself. Everywhere else, including the VS Code integrated terminal, you get a link that opens the file in your editor or image viewer.
+A Claude Code mod that shows you the images in a session: the ones you paste or name in the prompt, and the ones a tool reads for the model. Where the terminal draws pictures you see the image itself. Everywhere else, including the VS Code integrated terminal, a PNG is drawn as a thumbnail in colored half blocks. Every image also gets a link that opens the file.
 
 ## Install
 
@@ -36,20 +36,22 @@ A path shows only once it names an existing `.png`, `.jpg`, `.jpeg`, `.gif` or `
 
 Subagents count too: their images show in their own agent view. The full transcript (ctrl+o) is left to Claude Code.
 
-## Pictures or links
+## Pictures, blocks or links
 
-| | kitty, Ghostty | any other terminal |
+| | kitty, Ghostty | any other terminal (VS Code, Windows Terminal, iTerm2, tmux, …) |
 | --- | --- | --- |
-| PNG | the picture, with its name and size under it | a link line |
+| PNG | the picture | a half-block thumbnail |
 | JPEG, GIF, WebP | a link line | a link line |
 
-A link line reads like `shots/login.png  1280×720`. The name is a hyperlink to the file: click it (ctrl+click or cmd+click in some terminals) to open it at full size. On WSL the click goes to Windows, which opens the file through the `\\wsl.localhost\<distro>\…` share in its default image viewer. An MCP image has no file behind it, so its line names the tool and has no link.
+A half-block thumbnail packs two pixels into each cell (`▀` in one color over a background in another), so it works in any terminal with true color. It is low resolution, but it is the picture. The mod decodes the PNG itself; JPEG, GIF and WebP would each need a decoder of their own, so they get a link line only.
 
-Claude Code draws pictures through the kitty graphics protocol, so pictures need kitty 0.28 or later, or Ghostty. Claude Code supports no sixel, so the VS Code terminal, Windows Terminal and most others get link lines. There is no setting to switch modes: the mod checks once per session whether the terminal draws a picture. Until that check answers, a second or so after the session starts, the transcript shows link lines. A row printed to the scrollback cannot be redrawn, so this keeps empty picture boxes out of it.
+Under every picture or thumbnail, and on its own for other formats, is a line like `shots/login.png  1280×720`. The name is a hyperlink to the file: click it (ctrl+click or cmd+click in some terminals) to open it at full size. On WSL the click goes to Windows, which opens the file through the `\\wsl.localhost\<distro>\…` share in its default image viewer. An MCP image has no file behind it, so its line names the tool and has no link.
+
+Claude Code draws pictures through the kitty graphics protocol, in kitty 0.28 or later and Ghostty, and not inside tmux or screen, over ssh, or in background sessions. It doesn't tell mods whether it will, so the mod reads the same environment it decides from (`TERM`, `TERM_PROGRAM`, `TMUX`, …). `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` makes both draw pictures anyway.
 
 ## Security
 
-The mod is local-only. It makes no network requests and writes no files. It reads the prompt box, and the size and first bytes of each image file the prompt names or you paste. It lists Claude Code's temp folder to find the session's pasted images. If `CLAUDE_CODE_TMPDIR` isn't set, it runs `id -u` once to find the default temp folder. Images in the transcript come from the tool results Claude Code already holds; the mod reads no file for them.
+The mod is local-only. It makes no network requests and writes no files. It follows the prompt box, and reads each PNG the prompt names or you paste (up to 4 MiB) to learn its size and, where pictures aren't drawn, to decode a thumbnail in memory. It lists Claude Code's temp folder to find the session's pasted images. If `CLAUDE_CODE_TMPDIR` isn't set, it runs `id -u` once to find the default temp folder. Images in the transcript come from the tool results Claude Code already holds; the mod reads no file for them.
 
 Run `claude plugin validate mods/image-view` to see every event it hooks and every call it makes.
 
@@ -57,4 +59,4 @@ Run `claude plugin validate mods/image-view` to see every event it hooks and eve
 
 - Claude Code with mods support. Built and tested against v2.1.314.
 - macOS or Linux, including WSL.
-- For pictures: kitty 0.28+ or Ghostty. A background session draws no pictures unless `CLAUDE_CODE_FORCE_TERMINAL_IMAGES=1` is set in the `env` block of `~/.claude/settings.json`.
+- For pictures: kitty 0.28+ or Ghostty. Elsewhere, a terminal with true color for the half-block thumbnails.

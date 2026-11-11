@@ -1,6 +1,6 @@
 {
   "name": "context-band",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "A band above the prompt showing the session's model and effort, context usage, and plan quota or cost",
   "author": { "name": "JinhaoFang" },
   "types": "./types/index.d.ts",

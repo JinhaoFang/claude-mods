@@ -13,7 +13,7 @@ mod 是一种 Claude Code 插件：它的 JavaScript / TypeScript 代码注册�
 | [context-band](mods/context-band/README.zh-CN.md) | 输入框上方的只读信息带：模型与思考强度、上下文占用，以及颜色各异、各带重置时间的 5h / 7d 套餐额度，或会话花费 | `/plugin install context-band --marketplace JinhaoFang/claude-mods` |
 | [block-destructive-commands](mods/block-destructive-commands/README.md) | 在执行前拦截破坏性 Bash 命令（对根目录递归 rm、强推、hard reset、破坏性 SQL、格式化磁盘） | `/plugin install block-destructive-commands --marketplace JinhaoFang/claude-mods` |
 | [agent-flow](mods/agent-flow/README.md) | 输入框旁实时展示会话的子代理与队友树；无法绘制面板时以文本打印 | `/plugin install agent-flow --marketplace JinhaoFang/claude-mods` |
-| [image-view](mods/image-view/README.zh-CN.md) | 预览图片：输入框上方显示粘贴的图片和你输入或拖入的路径，对话记录中在读取图片的工具调用下方显示；kitty 和 Ghostty 中直接画图，其他终端中显示可打开文件的链接 | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
+| [image-view](mods/image-view/README.zh-CN.md) | 预览图片：输入框上方显示粘贴的图片和你输入或拖入的路径，对话记录中在读取图片的工具调用下方显示；kitty 和 Ghostty 中直接画图，其他终端中画成半字符块缩略图，并附带可打开文件的链接 | `/plugin install image-view --marketplace JinhaoFang/claude-mods` |
 | [redact](mods/redact/README.zh-CN.md) | 在敏感数据进入模型上下文之前改写为占位符（邮箱、IP、凭证、地址、电话）；准确优先，不误伤 DOI、哈希和版本号 | `/plugin install redact --marketplace JinhaoFang/claude-mods` |
 
 ## 预览
@@ -34,13 +34,9 @@ mod 是一种 Claude Code 插件：它的 JavaScript / TypeScript 代码注册�
 
 ### image-view
 
-终端不能画图时（例如 VS Code 终端）的信息带：每张图片显示为一行，点击文件名即可打开文件。在 kitty 和 Ghostty 中，PNG 会直接画成图片：
+在不能画图的终端（例如 VS Code 终端）里，PNG 画成半字符块：一张 320×160 的测试图画在 48×12 个字符格中，由 mod 自身的输出绘制。kitty 和 Ghostty 中直接显示图片本身。
 
-```
-[Image #1]  1280×720
-shots/login.png  640×480
-❯ why does the header differ between [Image #1] and shots/login.png
-```
+![image-view：PNG 画成半字符块缩略图](mods/image-view/assets/blocks.png)
 
 ## 安装
 

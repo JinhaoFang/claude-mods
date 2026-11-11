@@ -84,3 +84,31 @@ export function fitRow(sizes: readonly (Size | undefined)[], maxRows: number, co
   }
   return sizes.map(size => ({ columns: tile(size, rows), rows }))
 }
+
+/** The variables Claude Code decides by whether its `Image` draws a picture or its alt. */
+export type TerminalEnv = {
+  [name in
+    | 'TERM'
+    | 'TERM_PROGRAM'
+    | 'KITTY_WINDOW_ID'
+    | 'GHOSTTY_RESOURCES_DIR'
+    | 'TMUX'
+    | 'STY'
+    | 'SSH_CONNECTION'
+    | 'CLAUDE_CODE_SESSION_KIND'
+    | 'CLAUDE_CODE_FORCE_TERMINAL_IMAGES']?: string | undefined
+}
+
+/**
+ * Whether Claude Code draws pictures here: kitty and Ghostty, but not inside tmux or screen,
+ * over ssh (a file source is read by the terminal, on its own machine) or in a background
+ * session, unless forced.
+ */
+export function drawsPictures(env: TerminalEnv): boolean {
+  if (env.CLAUDE_CODE_FORCE_TERMINAL_IMAGES === '1' || env.CLAUDE_CODE_FORCE_TERMINAL_IMAGES === 'true') return true
+  if (env.CLAUDE_CODE_SESSION_KIND === 'bg' || env.TMUX || env.STY || env.SSH_CONNECTION) return false
+  if (env.TERM === 'xterm-kitty' || env.TERM === 'xterm-ghostty') return true
+  // An editor's terminal started from kitty or Ghostty inherits their variables but not their pictures.
+  if (env.TERM_PROGRAM !== undefined) return env.TERM_PROGRAM === 'ghostty'
+  return env.KITTY_WINDOW_ID !== undefined || env.GHOSTTY_RESOURCES_DIR !== undefined
+}

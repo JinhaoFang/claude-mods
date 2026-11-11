@@ -60,6 +60,8 @@ function stubEnvironment(on: On, model = 'Opus 4.6', cwd = '/root/project/claude
   on('session.model', () => ({ value: model }))
   on('session.cwd', () => ({ value: cwd }))
   on('agent.list', () => ({ value: agents }))
+  // The engine beneath draws nothing in the band.
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', children: [] }))
 }
 
 function agentOf(opts: { id: string; type: string; status?: 'running' | 'idle'; name?: string }): AgentInfo {
@@ -161,13 +163,24 @@ test('the band draws the environment row above the readings row, with no buttons
 })
 
 test('the band yields when a survey holds it', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', children: ['the engine band'] }))
   stubEnvironment(on)
   on('session.usage', () => ({ value: usageOf({ percent: 34.2, tokens: 68_400 }) }))
-  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', children: ['the engine band'] }))
 
   const ui = await mountBand($, { hasSurvey: true })
   expect(await ui.find({ text: /34\.2%/ })).toBeUndefined()
   expect(await ui.find({ text: /the engine band/ })).toBeDefined()
+  await ui.unmount()
+})
+
+test('what the plugins beneath draw in the band goes under its rows', async ($, on) => {
+  on('ui.render', { component: 'AbovePrompt' }, () => ({ type: 'Box', children: ['a band beneath'] }))
+  stubEnvironment(on)
+  on('session.usage', () => ({ value: usageOf({ percent: 34.2, tokens: 68_400 }) }))
+
+  const ui = await mountBand($)
+  expect(await ui.find({ text: /34\.2%/ })).toBeDefined()
+  expect(await ui.find({ text: /a band beneath/ })).toBeDefined()
   await ui.unmount()
 })
 
