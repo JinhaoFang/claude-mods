@@ -1,122 +1,280 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { Elements, EngineInterface, Register, RenderChildren } from 'claude-code'
 
-import type { PastedImage } from '../types'
-import { fitRow, imageNumbers, pngSize } from './layout'
-import type { Size } from './layout'
+import type { Pictures, Preview } from '../types'
+import { base64Bytes, fitOne, fitRow, pngSize, toolImages } from './images'
+import type { ToolImage } from './images'
+import { displayPath, draftRefs, fileUrl, resolvePath } from './paths'
+import type { PathContext } from './paths'
 
-// Pasting an image raises no prompt.edit (the tag only shows up on the next keystroke),
-// so the draft is polled instead.
+// Pasting an image raises no prompt.edit (its tag shows up on the next keystroke), so the
+// draft is polled instead.
 const POLL_MS = 200
+const PROBE_DELAY_MS = 400
+const PROBE_ATTEMPTS = 3
+const TRANSCRIPT_ROWS = 12
+const TRANSCRIPT_INDENT = 5
+const MAX_READ_BYTES = 4 * 1024 * 1024
+const MAX_TREE_BYTES = 2 * 1024 * 1024
 
-const images = atom({ plugin: 'image-view', key: 'images' } as const, [] as PastedImage[])
+const pictures = atom({ plugin: 'image-view', key: 'pictures' } as const, 'unknown' as Pictures)
+const draft = atom({ plugin: 'image-view', key: 'draft' } as const, [] as Preview[])
+const readPaths = atom({ plugin: 'image-view', key: 'readPaths' } as const, {} as Record<string, string>)
 
+let context: PathContext | undefined
 let tmpRoot: string | undefined
-let found: { sessionId: string; dir: string } | undefined
-// The image numbers last drawn, so an unchanged draft doesn't rewrite state; undefined
-// while a drawn image's file is still missing, so the next poll looks again.
-let shownKey: string | undefined
+let sessionImages: { sessionId: string; dir: string } | undefined
+// The draft last shown; undefined while a pasted image's file is still missing, so the
+// next poll looks again.
+let shownDraft: string | undefined
+let shownJson = '[]'
 let isChecking = false
-const sizes = new Map<string, Size | null>()
+let isProbing = false
+const pngSizes = new Map<string, ReturnType<typeof pngSize>>()
+
+async function pathContext($: EngineInterface): Promise<PathContext> {
+  context = {
+    cwd: await $.session.cwd(),
+    home: await $.env.get('HOME'),
+    isWsl: (await $.env.get('WSL_DISTRO_NAME')) !== undefined,
+  }
+  return context
+}
 
 // Claude Code caches each paste as <tmp>/<project>/<session>/images/<n>.png. The project
-// folder is named after a working directory that may since have moved, so find it by the
-// session id instead of rebuilding it.
+// folder is named after a working directory that may since have moved, so it is found by
+// the session id.
 async function imagesDir($: EngineInterface): Promise<string | undefined> {
   const sessionId = await $.session.id()
-  if (found?.sessionId === sessionId) return found.dir
-  if (tmpRoot === undefined) {
-    const fromEnv = await $.env.get('CLAUDE_CODE_TMPDIR')
-    tmpRoot = fromEnv ?? `/tmp/claude-${(await $.process.run(['id', '-u'])).stdout.trim()}`
-  }
-  const entries = await $.fs.list(tmpRoot).catch(() => [])
-  for (const entry of entries) {
+  if (sessionImages?.sessionId === sessionId) return sessionImages.dir
+  tmpRoot ??= (await $.env.get('CLAUDE_CODE_TMPDIR')) ?? `/tmp/claude-${(await $.process.run(['id', '-u'])).stdout.trim()}`
+  for (const entry of await $.fs.list(tmpRoot).catch(() => [])) {
     const dir = `${tmpRoot}/${entry.name}/${sessionId}/images`
     if (entry.kind === 'dir' && (await $.fs.exists(dir))) {
-      found = { sessionId, dir }
+      sessionImages = { sessionId, dir }
       return dir
     }
   }
   return undefined
 }
 
-async function describe($: EngineInterface, dir: string | undefined, n: number): Promise<PastedImage> {
-  const path = `${dir}/${n}.png`
-  if (dir === undefined || !(await $.fs.exists(path))) return { n, path: null, size: null }
-  if (!sizes.has(path)) {
-    const head = await $.fs.read(path, { as: 'bytes' }).then(
-      ({ base64 }) => pngSize(base64),
-      () => undefined, // too big to read: still drawable, just without its aspect ratio
-    )
-    if (head === null) return { n, path: null, size: null }
-    sizes.set(path, head ?? null)
+async function filePreview($: EngineInterface, label: string, path: string): Promise<Preview | undefined> {
+  const stat = await $.fs.stat(path).catch(() => undefined)
+  if (stat?.kind !== 'file') return undefined
+  const preview: Preview = { label, href: fileUrl(path) }
+  if (!/\.png$/i.test(path)) return preview
+  const key = `${path}:${stat.size}:${stat.mtimeMs}`
+  if (!pngSizes.has(key) && stat.size <= MAX_READ_BYTES) {
+    const head = await $.fs.read(path, { as: 'bytes' }).then(({ base64 }) => pngSize(base64), () => null)
+    pngSizes.set(key, head)
+    if (head === null) return preview
   }
-  return { n, path, size: sizes.get(path) ?? null }
-}
-
-async function show($: EngineInterface, draft: string) {
-  const numbers = imageNumbers(draft)
-  const key = numbers.join(',')
-  if (key === shownKey) return
-  const dir = numbers.length > 0 ? await imagesDir($) : undefined
-  const list: PastedImage[] = []
-  for (const n of numbers) list.push(await describe($, dir, n))
-  shownKey = list.every(image => image.path !== null) ? key : undefined
-  await update($, images, () => list)
+  const size = pngSizes.get(key) ?? undefined
+  return {
+    ...preview,
+    ...(size && { size, detail: `${size.width}×${size.height}` }),
+    picture: { file: path, format: 'png', generation: Math.floor(stat.mtimeMs) },
+  }
 }
 
 async function check($: EngineInterface) {
   if (isChecking) return
   isChecking = true
   try {
-    await show($, (await $.prompt.read()).text)
+    const { text } = await $.prompt.read()
+    if (text === shownDraft) return
+    const refs = draftRefs(text)
+    const where = refs.some(ref => ref.kind === 'path') ? await pathContext($) : context
+    const dir = refs.some(ref => ref.kind === 'pasted') ? await imagesDir($) : undefined
+    const list: Preview[] = []
+    let isComplete = true
+    for (const ref of refs) {
+      if (ref.kind === 'pasted') {
+        const label = `[Image #${ref.n}]`
+        const preview = dir === undefined ? undefined : await filePreview($, label, `${dir}/${ref.n}.png`)
+        if (preview === undefined) isComplete = false
+        list.push(preview ?? { label, detail: 'not found' })
+      } else {
+        const path = where && resolvePath(ref.written, where)
+        const preview = path && (await filePreview($, ref.written, path))
+        if (preview) list.push(preview)
+      }
+    }
+    shownDraft = isComplete ? text : undefined
+    const json = JSON.stringify(list)
+    if (json === shownJson) return
+    shownJson = json
+    await update($, draft, () => list)
   } finally {
     isChecking = false
   }
 }
 
+// No call says whether the terminal draws pictures, but a blit to a mounted Image is denied
+// where it draws its alt instead. The probe is a file source, so `on` means file and byte
+// sources alike are drawn.
+function probeSource($: EngineInterface) {
+  return { file: `${$.plugin.root}/assets/probe.png`, format: 'png' } as const
+}
+
+function probe($: EngineInterface, requestId: string, attempt = 1) {
+  $.clock.after(PROBE_DELAY_MS, async () => {
+    const { deny } = await $.ui.blit({ requestId, key: 'probe', source: probeSource($) })
+    if (deny?.startsWith('no-surface')) {
+      isProbing = false
+      return
+    }
+    // An early deny may only mean the probe is not mounted yet; a steady one is the alt.
+    if (deny !== undefined && attempt < PROBE_ATTEMPTS) return probe($, requestId, attempt + 1)
+    await update($, pictures, () => (deny === undefined ? 'on' : 'off'))
+  })
+}
+
+function startProbe($: EngineInterface, requestId: string): true {
+  if (!isProbing) {
+    isProbing = true
+    probe($, requestId)
+  }
+  return true
+}
+
+type TerminalElements = Pick<Elements['terminal'], 'Box' | 'Image' | 'Link' | 'Text'>
+
+function caption({ Link, Text }: TerminalElements, preview: Preview) {
+  return (
+    <Text wrap="truncate">
+      {preview.href ? <Link href={preview.href}>{preview.label}</Link> : preview.label}
+      {preview.detail ? <Text dimColor>{`  ${preview.detail}`}</Text> : ''}
+    </Text>
+  )
+}
+
+// Rows printed above the live area stay as printed, so a picture is drawn under a tool's
+// result only once the probe has seen the terminal draw one: never an empty box where the
+// alt went.
+function drawBelow(elements: TerminalElements, engine: RenderChildren, previews: Preview[], mode: Pictures, viewColumns = 80) {
+  const { Box, Image } = elements
+  const maxColumns = Math.max(10, viewColumns - TRANSCRIPT_INDENT - 1)
+  return (
+    <Box flexDirection="column">
+      {engine}
+      {previews.map((preview, i) => {
+        if (mode !== 'on' || preview.picture === undefined) {
+          return <Box paddingLeft={TRANSCRIPT_INDENT}>{caption(elements, preview)}</Box>
+        }
+        const { columns, rows } = fitOne(preview.size, maxColumns, TRANSCRIPT_ROWS)
+        return (
+          <Box flexDirection="column" paddingLeft={TRANSCRIPT_INDENT}>
+            <Image key={`image-${i}`} source={preview.picture} columns={columns} rows={rows} alt={preview.label} />
+            {caption(elements, preview)}
+          </Box>
+        )
+      })}
+    </Box>
+  )
+}
+
+// One tree carries at most 2 MiB of picture bytes; past that a PNG file is named instead.
+function toolPreviews(tool: string, images: ToolImage[], budget = { bytes: MAX_TREE_BYTES }): Preview[] {
+  return images.map((image, i) => {
+    const bytes = base64Bytes(image.base64)
+    let picture: Preview['picture']
+    if (image.mediaType === 'image/png' && bytes <= budget.bytes) {
+      picture = { png: image.base64 }
+      budget.bytes -= bytes
+    } else if (image.path !== undefined && /\.png$/i.test(image.path)) {
+      picture = { file: image.path, format: 'png' }
+    }
+    const label =
+      image.path !== undefined
+        ? context ? displayPath(image.path, context) : image.path
+        : `${tool.split('__').slice(2).join('__')} image${images.length > 1 ? ` ${i + 1}` : ''}`
+    return {
+      label,
+      ...(image.path !== undefined && { href: fileUrl(image.path) }),
+      ...(image.size && { size: image.size, detail: `${image.size.width}×${image.size.height}` }),
+      ...(picture && { picture }),
+    }
+  })
+}
+
+function readPathOf(input: unknown): string | undefined {
+  const path = typeof input === 'object' && input !== null ? (input as { file_path?: unknown }).file_path : undefined
+  return typeof path === 'string' ? path : undefined
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
+    void pathContext($)
     $.clock.every(POLL_MS, () => check($))
     return next(e)
   })
 
+  // A ToolResult carries no input, so the path a Read of an image opened is kept by its call.
+  on('tool.call', { tool: 'Read' }, async ($, e, next) => {
+    const result = await next(e)
+    const output = 'result' in result ? (result.result as { type?: unknown }) : undefined
+    const path = readPathOf(e)
+    if (output?.type === 'image' && path !== undefined) {
+      await update($, readPaths, paths => ({ ...paths, [e.tool_use_id]: path }))
+    }
+    return result
+  })
+
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.props.hasSurvey) return next(e)
-    const list = await read($, images)
-    if (list.length === 0) return next(e)
+    const mode = await read($, pictures)
+    const list = await read($, draft)
+    const isProbe = mode === 'unknown' && startProbe($, e.requestId)
+    if (list.length === 0 && !isProbe) return next(e)
 
-    const { Box, Image, Text } = $.ui.resolve(e)
-    const cells = fitRow(list.map(image => image.size), e.props.maxRows, e.props.bodyColumns)
+    const elements = $.ui.resolve(e)
+    const { Box, Image } = elements
+    const drawn = mode === 'on' ? list.filter(preview => preview.picture) : []
+    const lines = list.filter(preview => !drawn.includes(preview))
+    const cells = fitRow(drawn.map(preview => preview.size), e.props.maxRows, e.props.bodyColumns)
     const below = await next(e)
 
     return (
       <Box flexDirection="column">
-        <Box flexDirection="row" columnGap={1}>
-          {list.map((image, i) => {
-            const { columns, rows } = cells[i] ?? { columns: 4, rows: 1 }
-            return (
-              <Box flexDirection="column" alignItems="center" borderStyle="round" borderDimColor>
-                {image.path === null ? (
-                  <Box width={columns} height={rows} alignItems="center" justifyContent="center">
-                    <Text dimColor wrap="truncate">no preview</Text>
-                  </Box>
-                ) : (
-                  <Image
-                    key={`image-${image.n}`}
-                    source={{ file: image.path, format: 'png' }}
-                    columns={columns}
-                    rows={rows}
-                    alt={`[Image #${image.n}]`}
-                  />
-                )}
-                <Text dimColor>#{image.n}</Text>
-              </Box>
-            )
-          })}
-        </Box>
+        {isProbe ? <Image key="probe" source={probeSource($)} columns={1} rows={1} alt=" " /> : ''}
+        {drawn.length > 0 ? (
+          <Box flexDirection="row" columnGap={2}>
+            {drawn.map((preview, i) => {
+              const { columns, rows } = cells[i] ?? { columns: 6, rows: 3 }
+              return (
+                <Box flexDirection="column" width={columns}>
+                  <Image key={`image-${i}`} source={preview.picture!} columns={columns} rows={rows} alt={preview.label} />
+                  {caption(elements, { ...preview, detail: undefined })}
+                </Box>
+              )
+            })}
+          </Box>
+        ) : ''}
+        {lines.map(preview => caption(elements, preview))}
         {below}
       </Box>
     )
+  })
+
+  on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.isErrored || e.props.isExpanded) return next(e)
+    if (toolImages(e.props.tool, e.props.output, undefined).length === 0) return next(e)
+    const path = (await read($, readPaths))[e.props.tool_use_id]
+    const previews = toolPreviews(e.props.tool, toolImages(e.props.tool, e.props.output, path))
+    return drawBelow($.ui.resolve(e), await next(e), previews, await read($, pictures), e.viewport?.columns)
+  })
+
+  // A run of reads folds into one line, its calls' results with it.
+  on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
+    if (e.surface !== 'terminal' || e.props.isExpanded) return next(e)
+    const budget = { bytes: MAX_TREE_BYTES }
+    const previews = e.props.calls.flatMap(call =>
+      call.isRunning || call.isErrored
+        ? []
+        : toolPreviews(call.tool, toolImages(call.tool, call.output, readPathOf(call.input)), budget),
+    )
+    if (previews.length === 0) return next(e)
+    return drawBelow($.ui.resolve(e), await next(e), previews, await read($, pictures), e.viewport?.columns)
   })
 }

@@ -33,11 +33,11 @@
     {
       "name": "image-view",
       "source": "./mods/image-view",
-      "description": "See the images you paste into Claude Code: thumbnails above the prompt instead of bare [Image #1] tags.",
+      "description": "Previews images in the prompt and the transcript: pasted images and image paths above the prompt, images a tool read under its result; pictures in kitty and Ghostty, a link to open each file elsewhere.",
       "category": "productivity",
-      "tags": ["images", "paste", "preview", "thumbnails", "mod", "terminal"],
-      "author": { "name": "Jarrod Watts", "url": "https://github.com/jarrodwatts" },
-      "homepage": "https://github.com/jarrodwatts/claude-image-view"
+      "tags": ["images", "paste", "preview", "thumbnails", "band", "transcript"],
+      "author": { "name": "JinhaoFang" },
+      "homepage": "https://github.com/JinhaoFang/claude-mods/tree/main/mods/image-view"
     },
     {
       "name": "redact",
