@@ -65,10 +65,10 @@ export function fitOne(size: Size | undefined, maxColumns: number, maxRows: numb
   return { columns: maxColumns, rows: Math.max(1, Math.min(maxRows, rows)) }
 }
 
-const TILE_ROWS = 8
+const TILE_ROWS = 12
 const TILE_GAP = 2
 const TILE_MIN_COLUMNS = 6
-const TILE_MAX_COLUMNS = 48
+const TILE_MAX_COLUMNS = 64
 
 /**
  * A row of tiles, each a picture over a one-row caption, that fits `columns` and `maxRows`:
@@ -111,4 +111,9 @@ export function drawsPictures(env: TerminalEnv): boolean {
   // An editor's terminal started from kitty or Ghostty inherits their variables but not their pictures.
   if (env.TERM_PROGRAM !== undefined) return env.TERM_PROGRAM === 'ghostty'
   return env.KITTY_WINDOW_ID !== undefined || env.GHOSTTY_RESOURCES_DIR !== undefined
+}
+
+/** Whether Claude Code draws in 256 colors: it does in xterm.js terminals (VS Code's, Cursor's). */
+export function limitsTo256Colors(env: TerminalEnv): boolean {
+  return env.TERM_PROGRAM === 'vscode'
 }

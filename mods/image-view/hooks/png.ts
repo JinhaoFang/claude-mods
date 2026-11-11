@@ -6,8 +6,8 @@ export type Thumb = { width: number; height: number; colors: Uint32Array }
 
 export const TRANSPARENT = 0x01000000
 
-const THUMB_WIDTH = 128
-const THUMB_HEIGHT = 96
+const THUMB_WIDTH = 256
+const THUMB_HEIGHT = 192
 const MAX_PIXELS = 50_000_000
 
 const LENGTH_BASE = [3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 15, 17, 19, 23, 27, 31, 35, 43, 51, 59, 67, 83, 99, 115, 131, 163, 195, 227, 258]
@@ -144,7 +144,7 @@ export function inflate(input: Uint8Array, size: number): Uint8Array | null {
 const CHANNELS: Record<number, number> = { 0: 1, 2: 3, 3: 1, 4: 2, 6: 4 }
 
 /**
- * A PNG's picture box-averaged down to at most 128 × 96, its shape kept; null for what this
+ * A PNG's picture box-averaged down to at most 256 × 192, its shape kept; null for what this
  * decoder does not read (not a PNG, interlaced, corrupt, too large).
  */
 export function decodeThumb(png: Uint8Array): Thumb | null {
@@ -271,49 +271,157 @@ function bytesToBase64(bytes: Uint8Array): string {
   return btoa(text)
 }
 
-const UPPER_HALF = 0x2580
-const LOWER_HALF = 0x2584
-const SPACE = 0x20
+// Quadrant blocks by which of a cell's quarters show the foreground: top left 8, top right 4,
+// bottom left 2, bottom right 1.
+const QUADRANTS = [0x20, 0x2597, 0x2596, 0x2584, 0x259d, 0x2590, 0x259e, 0x259f, 0x2598, 0x259a, 0x258c, 0x2599, 0x2580, 0x259c, 0x259b, 0x2588]
 
-function average(thumb: Thumb, x0: number, x1: number, y0: number, y1: number): number {
+function mean(colors: number[]): number {
   let r = 0
   let g = 0
   let b = 0
-  let opaque = 0
-  let count = 0
+  for (const color of colors) {
+    r += color >> 16
+    g += (color >> 8) & 0xff
+    b += color & 0xff
+  }
+  const n = colors.length
+  return (Math.round(r / n) << 16) | (Math.round(g / n) << 8) | Math.round(b / n)
+}
+
+function distance(a: number, b: number): number {
+  return ((a >> 16) - (b >> 16)) ** 2 + (((a >> 8) & 0xff) - ((b >> 8) & 0xff)) ** 2 + ((a & 0xff) - (b & 0xff)) ** 2
+}
+
+/** The quadrant block, foreground and background that draw four quarters closest in two colors. */
+function quadrantCell(quarters: number[]): [number, number, number] {
+  const opaque = quarters.map(color => color !== TRANSPARENT)
+  if (!opaque.some(Boolean)) return [0x20, TRANSPARENT, TRANSPARENT]
+  if (!opaque.every(Boolean)) {
+    const mask = opaque.reduce((bits, isOpaque, i) => bits | (isOpaque ? 8 >> i : 0), 0)
+    return [QUADRANTS[mask]!, mean(quarters.filter(color => color !== TRANSPARENT)), TRANSPARENT]
+  }
+  let best: [number, number, number] = [0x20, TRANSPARENT, mean(quarters)]
+  let bestError = Infinity
+  // The top left quarter is always foreground, so each split into two colors is tried once.
+  for (let mask = 8; mask < 16; mask++) {
+    const front = quarters.filter((_, i) => mask & (8 >> i))
+    const back = quarters.filter((_, i) => !(mask & (8 >> i)))
+    const fg = mean(front)
+    const bg = back.length > 0 ? mean(back) : fg
+    const error = front.reduce((sum, c) => sum + distance(c, fg), 0) + back.reduce((sum, c) => sum + distance(c, bg), 0)
+    if (error < bestError) {
+      bestError = error
+      best = [QUADRANTS[mask]!, fg, bg]
+    }
+  }
+  return best[1] === best[2] ? [0x20, TRANSPARENT, best[2]] : best
+}
+
+/** One pixel of the picture: the average of a box of the thumbnail, transparent where most of it is. */
+function average(thumb: Thumb, x0: number, x1: number, y0: number, y1: number): number {
+  const opaque: number[] = []
   for (let y = y0; y < y1; y++) {
     for (let x = x0; x < x1; x++) {
       const color = thumb.colors[y * thumb.width + x]!
-      count++
-      if (color === TRANSPARENT) continue
-      opaque++
-      r += color >> 16
-      g += (color >> 8) & 0xff
-      b += color & 0xff
+      if (color !== TRANSPARENT) opaque.push(color)
     }
   }
-  if (opaque * 2 < count || opaque === 0) return TRANSPARENT
-  return (Math.round(r / opaque) << 16) | (Math.round(g / opaque) << 8) | Math.round(b / opaque)
+  return opaque.length * 2 < (x1 - x0) * (y1 - y0) || opaque.length === 0 ? TRANSPARENT : mean(opaque)
 }
 
-/** A Raster's cells drawing `thumb` in `columns` × `rows`: two pixels a cell, `▀` over its background. */
-export function blockCells(thumb: Thumb, columns: number, rows: number): string {
+// Where Claude Code draws 256 colors it maps each color with chalk's rgbToAnsi256, which rounds
+// each channel on its own: a pale blue turns cyan and a tinted light gray jumps cube steps. So
+// the mod picks the palette color that looks closest and sends a color rgbToAnsi256 maps to it.
+type Swatch = { shown: number; sent: number }
+
+const CUBE = [0, 95, 135, 175, 215, 255]
+const rgb = (r: number, g: number, b: number) => (r << 16) | (g << 8) | b
+
+export const SWATCHES: readonly Swatch[] = (() => {
+  const swatches: Swatch[] = [
+    { shown: 0x000000, sent: 0x000000 },
+    { shown: 0xffffff, sent: 0xffffff },
+  ]
+  for (let r = 0; r < 6; r++) {
+    for (let g = 0; g < 6; g++) {
+      for (let b = 0; b < 6; b++) {
+        // A cube gray is sent as a gray, which rgbToAnsi256 maps to the gray ramp instead.
+        if (r === g && g === b) continue
+        swatches.push({ shown: rgb(CUBE[r]!, CUBE[g]!, CUBE[b]!), sent: rgb(r * 51, g * 51, b * 51) })
+      }
+    }
+  }
+  for (let k = 0; k < 24; k++) {
+    const shown = 8 + 10 * k
+    const sent = 8 + Math.round((k * 247) / 24)
+    swatches.push({ shown: rgb(shown, shown, shown), sent: rgb(sent, sent, sent) })
+  }
+  return swatches
+})()
+
+// OKLab, where distance follows how far apart two colors look, hue and chroma included.
+function oklab(color: number): [number, number, number] {
+  const linear = (v: number) => {
+    const c = v / 255
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4
+  }
+  const [r, g, b] = [linear(color >> 16), linear((color >> 8) & 0xff), linear(color & 0xff)]
+  const l = Math.cbrt(0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b)
+  const m = Math.cbrt(0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b)
+  const s = Math.cbrt(0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b)
+  return [
+    0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s,
+    1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+    0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+  ]
+}
+
+const SWATCH_LAB = SWATCHES.map(swatch => oklab(swatch.shown))
+
+const nearest = new Map<number, number>()
+
+/** The color to send for the palette color that looks closest to `color`. */
+function inPalette(color: number): number {
+  if (color === TRANSPARENT) return color
+  let sent = nearest.get(color)
+  if (sent === undefined) {
+    const [L, A, B] = oklab(color)
+    let bestDistance = Infinity
+    SWATCH_LAB.forEach(([l, a, b], i) => {
+      const d = (L - l) ** 2 + (A - a) ** 2 + (B - b) ** 2
+      if (d < bestDistance) {
+        bestDistance = d
+        sent = SWATCHES[i]!.sent
+      }
+    })
+    if (nearest.size > 65_536) nearest.clear()
+    nearest.set(color, sent!)
+  }
+  return sent!
+}
+
+/**
+ * A Raster's cells drawing `thumb` in `columns` × `rows`: four pixels a cell, a quadrant block
+ * in the two colors closest to them; with `in256Colors`, each the palette color closest to it.
+ */
+export function blockCells(thumb: Thumb, columns: number, rows: number, in256Colors = false): string {
   const pixel = (px: number, py: number) => {
-    const x0 = Math.floor((px * thumb.width) / columns)
+    const x0 = Math.floor((px * thumb.width) / (columns * 2))
     const y0 = Math.floor((py * thumb.height) / (rows * 2))
-    const x1 = Math.max(x0 + 1, Math.floor(((px + 1) * thumb.width) / columns))
+    const x1 = Math.max(x0 + 1, Math.floor(((px + 1) * thumb.width) / (columns * 2)))
     const y1 = Math.max(y0 + 1, Math.floor(((py + 1) * thumb.height) / (rows * 2)))
     return average(thumb, x0, Math.min(x1, thumb.width), y0, Math.min(y1, thumb.height))
   }
   const words = new Uint32Array(columns * rows * 3)
   for (let row = 0; row < rows; row++) {
     for (let column = 0; column < columns; column++) {
-      const top = pixel(column, row * 2)
-      const bottom = pixel(column, row * 2 + 1)
-      const cell = (row * columns + column) * 3
-      if (top === TRANSPARENT && bottom === TRANSPARENT) words.set([SPACE, TRANSPARENT, TRANSPARENT], cell)
-      else if (top === TRANSPARENT) words.set([LOWER_HALF, bottom, TRANSPARENT], cell)
-      else words.set([UPPER_HALF, top, bottom], cell)
+      const [x, y] = [column * 2, row * 2]
+      let [glyph, fg, bg] = quadrantCell([pixel(x, y), pixel(x + 1, y), pixel(x, y + 1), pixel(x + 1, y + 1)])
+      if (in256Colors) {
+        ;[fg, bg] = [inPalette(fg), inPalette(bg)]
+        if (fg === bg) [glyph, fg] = [0x20, TRANSPARENT]
+      }
+      words.set([glyph, fg, bg], (row * columns + column) * 3)
     }
   }
   const bytes = new Uint8Array(words.buffer)
