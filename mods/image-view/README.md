@@ -43,7 +43,7 @@ Subagents count too: their images show in their own agent view. The full transcr
 | PNG | the picture, with its name and size under it | a link line |
 | JPEG, GIF, WebP | a link line | a link line |
 
-A link line reads like `shots/login.png  1280×720`. The name is a hyperlink to the file: click it (ctrl+click or cmd+click in some terminals) to open it at full size. An MCP image has no file behind it, so its line names the tool and has no link.
+A link line reads like `shots/login.png  1280×720`. The name is a hyperlink to the file: click it (ctrl+click or cmd+click in some terminals) to open it at full size. On WSL the click goes to Windows, which opens the file through the `\\wsl.localhost\<distro>\…` share in its default image viewer. An MCP image has no file behind it, so its line names the tool and has no link.
 
 Claude Code draws pictures through the kitty graphics protocol, so pictures need kitty 0.28 or later, or Ghostty. Claude Code supports no sixel, so the VS Code terminal, Windows Terminal and most others get link lines. There is no setting to switch modes: the mod checks once per session whether the terminal draws a picture. Until that check answers, a second or so after the session starts, the transcript shows link lines. A row printed to the scrollback cannot be redrawn, so this keeps empty picture boxes out of it.
 

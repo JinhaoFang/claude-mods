@@ -1,6 +1,7 @@
 export type DraftRef = { kind: 'pasted'; n: number } | { kind: 'path'; written: string }
 
-export type PathContext = { cwd: string; home: string | undefined; isWsl: boolean }
+/** `wslDistro` names the WSL distribution the session runs in, absent outside WSL. */
+export type PathContext = { cwd: string; home: string | undefined; wslDistro?: string }
 
 const IMAGE_EXTENSION = /\.(png|jpe?g|gif|webp)$/i
 const TOKEN = /\[Image #(\d+)\]|"([^"\n]+)"|'([^'\n]+)'|((?:\\ |[^\s"'])+)/g
@@ -43,10 +44,10 @@ export function resolvePath(written: string, context: PathContext): string | und
   const drive = /^([A-Za-z]):[\\/](.*)$/.exec(written)
   if (drive) {
     const [, letter = '', rest = ''] = drive
-    return context.isWsl ? normalize(`/mnt/${letter.toLowerCase()}/${rest.replaceAll('\\', '/')}`) : undefined
+    return context.wslDistro !== undefined ? normalize(`/mnt/${letter.toLowerCase()}/${rest.replaceAll('\\', '/')}`) : undefined
   }
   const wslShare = /^\\\\wsl(?:\.localhost|\$)\\[^\\]+(\\.*)$/i.exec(written)
-  if (wslShare) return context.isWsl ? normalize((wslShare[1] ?? '').replaceAll('\\', '/')) : undefined
+  if (wslShare) return context.wslDistro !== undefined ? normalize((wslShare[1] ?? '').replaceAll('\\', '/')) : undefined
   if (written.startsWith('\\\\')) return undefined
   if (written.startsWith('~/')) return context.home === undefined ? undefined : normalize(`${context.home}/${written.slice(2)}`)
   if (written.startsWith('/')) return normalize(written)
@@ -70,6 +71,9 @@ export function displayPath(path: string, context: PathContext): string {
   return path
 }
 
-export function fileUrl(path: string): string {
-  return `file://${encodeURI(path).replaceAll('#', '%23').replaceAll('?', '%3F')}`
+// On WSL a click is opened by Windows, which reaches the distribution's files through its
+// \\wsl.localhost share, not by their Linux path.
+export function fileUrl(path: string, wslDistro?: string): string {
+  const host = wslDistro === undefined ? '' : `wsl.localhost/${encodeURIComponent(wslDistro)}`
+  return `file://${host}${encodeURI(path).replaceAll('#', '%23').replaceAll('?', '%3F')}`
 }

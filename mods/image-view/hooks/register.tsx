@@ -7,9 +7,8 @@ import type { ToolImage } from './images'
 import { displayPath, draftRefs, fileUrl, resolvePath } from './paths'
 import type { PathContext } from './paths'
 
-// Pasting an image raises no prompt.edit (its tag shows up on the next keystroke), so the
-// draft is polled instead.
-const POLL_MS = 200
+const RETRY_MS = 200
+const RETRIES = 10
 const PROBE_DELAY_MS = 400
 const PROBE_ATTEMPTS = 3
 const TRANSCRIPT_ROWS = 12
@@ -24,20 +23,19 @@ const readPaths = atom({ plugin: 'image-view', key: 'readPaths' } as const, {} a
 let context: PathContext | undefined
 let tmpRoot: string | undefined
 let sessionImages: { sessionId: string; dir: string } | undefined
-// The draft last shown; undefined while a pasted image's file is still missing, so the
-// next poll looks again.
+let latestDraft = ''
+// The draft last shown; undefined while a pasted image's file is still missing, so a
+// retry looks again.
 let shownDraft: string | undefined
 let shownJson = '[]'
 let isChecking = false
+let retries = 0
 let isProbing = false
 const pngSizes = new Map<string, ReturnType<typeof pngSize>>()
 
 async function pathContext($: EngineInterface): Promise<PathContext> {
-  context = {
-    cwd: await $.session.cwd(),
-    home: await $.env.get('HOME'),
-    isWsl: (await $.env.get('WSL_DISTRO_NAME')) !== undefined,
-  }
+  const wslDistro = await $.env.get('WSL_DISTRO_NAME')
+  context = { cwd: await $.session.cwd(), home: await $.env.get('HOME'), ...(wslDistro && { wslDistro }) }
   return context
 }
 
@@ -61,7 +59,7 @@ async function imagesDir($: EngineInterface): Promise<string | undefined> {
 async function filePreview($: EngineInterface, label: string, path: string): Promise<Preview | undefined> {
   const stat = await $.fs.stat(path).catch(() => undefined)
   if (stat?.kind !== 'file') return undefined
-  const preview: Preview = { label, href: fileUrl(path) }
+  const preview: Preview = { label, href: fileUrl(path, context?.wslDistro) }
   if (!/\.png$/i.test(path)) return preview
   const key = `${path}:${stat.size}:${stat.mtimeMs}`
   if (!pngSizes.has(key) && stat.size <= MAX_READ_BYTES) {
@@ -77,37 +75,57 @@ async function filePreview($: EngineInterface, label: string, path: string): Pro
   }
 }
 
+// The draft arrives by event, not by polling: an edit (keys, a text paste) or a change no
+// edit carried, which is how a pasted image's [Image #n] tag lands.
+function draftChanged($: EngineInterface, text: string) {
+  latestDraft = text
+  retries = 0
+  void check($)
+}
+
 async function check($: EngineInterface) {
   if (isChecking) return
   isChecking = true
   try {
-    const { text } = await $.prompt.read()
-    if (text === shownDraft) return
-    const refs = draftRefs(text)
-    const where = refs.some(ref => ref.kind === 'path') ? await pathContext($) : context
-    const dir = refs.some(ref => ref.kind === 'pasted') ? await imagesDir($) : undefined
-    const list: Preview[] = []
-    let isComplete = true
-    for (const ref of refs) {
-      if (ref.kind === 'pasted') {
-        const label = `[Image #${ref.n}]`
-        const preview = dir === undefined ? undefined : await filePreview($, label, `${dir}/${ref.n}.png`)
-        if (preview === undefined) isComplete = false
-        list.push(preview ?? { label, detail: 'not found' })
-      } else {
-        const path = where && resolvePath(ref.written, where)
-        const preview = path && (await filePreview($, ref.written, path))
-        if (preview) list.push(preview)
-      }
-    }
-    shownDraft = isComplete ? text : undefined
-    const json = JSON.stringify(list)
-    if (json === shownJson) return
-    shownJson = json
-    await update($, draft, () => list)
+    let text: string
+    do {
+      text = latestDraft
+      await show($, text)
+    } while (text !== latestDraft)
   } finally {
     isChecking = false
   }
+  // A pasted image's file may land after its tag does.
+  if (shownDraft === undefined && retries < RETRIES) {
+    retries += 1
+    $.clock.after(RETRY_MS, () => check($))
+  }
+}
+
+async function show($: EngineInterface, text: string) {
+  if (text === shownDraft) return
+  const refs = draftRefs(text)
+  const where = refs.some(ref => ref.kind === 'path') ? await pathContext($) : (context ??= await pathContext($))
+  const dir = refs.some(ref => ref.kind === 'pasted') ? await imagesDir($) : undefined
+  const list: Preview[] = []
+  let isComplete = true
+  for (const ref of refs) {
+    if (ref.kind === 'pasted') {
+      const label = `[Image #${ref.n}]`
+      const preview = dir === undefined ? undefined : await filePreview($, label, `${dir}/${ref.n}.png`)
+      if (preview === undefined) isComplete = false
+      list.push(preview ?? { label, detail: 'not found' })
+    } else {
+      const path = resolvePath(ref.written, where)
+      const preview = path && (await filePreview($, ref.written, path))
+      if (preview) list.push(preview)
+    }
+  }
+  shownDraft = isComplete ? text : undefined
+  const json = JSON.stringify(list)
+  if (json === shownJson) return
+  shownJson = json
+  await update($, draft, () => list)
 }
 
 // No call says whether the terminal draws pictures, but a blit to a mounted Image is denied
@@ -191,7 +209,7 @@ function toolPreviews(tool: string, images: ToolImage[], budget = { bytes: MAX_T
         : `${tool.split('__').slice(2).join('__')} image${images.length > 1 ? ` ${i + 1}` : ''}`
     return {
       label,
-      ...(image.path !== undefined && { href: fileUrl(image.path) }),
+      ...(image.path !== undefined && { href: fileUrl(image.path, context?.wslDistro) }),
       ...(image.size && { size: image.size, detail: `${image.size.width}×${image.size.height}` }),
       ...(picture && { picture }),
     }
@@ -204,9 +222,14 @@ function readPathOf(input: unknown): string | undefined {
 }
 
 export const register: Register = on => {
-  on('session.start', async ($, e, next) => {
-    void pathContext($)
-    $.clock.every(POLL_MS, () => check($))
+  on('prompt.edit', async ($, e, next) => {
+    const box = await next(e)
+    draftChanged($, box.text)
+    return box
+  })
+
+  on('prompt.change', async ($, e, next) => {
+    draftChanged($, e.text)
     return next(e)
   })
 
@@ -260,6 +283,7 @@ export const register: Register = on => {
   on('ui.render', { component: 'ToolResult' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.props.isErrored || e.props.isExpanded) return next(e)
     if (toolImages(e.props.tool, e.props.output, undefined).length === 0) return next(e)
+    context ??= await pathContext($)
     const path = (await read($, readPaths))[e.props.tool_use_id]
     const previews = toolPreviews(e.props.tool, toolImages(e.props.tool, e.props.output, path))
     return drawBelow($.ui.resolve(e), await next(e), previews, await read($, pictures), e.viewport?.columns)
@@ -268,6 +292,7 @@ export const register: Register = on => {
   // A run of reads folds into one line, its calls' results with it.
   on('ui.render', { component: 'ToolGroup' }, async ($, e, next) => {
     if (e.surface !== 'terminal' || e.props.isExpanded) return next(e)
+    context ??= await pathContext($)
     const budget = { bytes: MAX_TREE_BYTES }
     const previews = e.props.calls.flatMap(call =>
       call.isRunning || call.isErrored
